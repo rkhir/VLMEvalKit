@@ -13,7 +13,7 @@ import copy
 import json
 from transformers import StoppingCriteria, StoppingCriteriaList
 
-from coconut import Coconut
+from .coconut import Coconut
 
 
 class StopOnStrings(StoppingCriteria):
