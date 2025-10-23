@@ -1573,6 +1573,26 @@ llama_series = {
     ),
 }
 
+coconut_series = {
+    "coconut-latte": partial(
+        CoconutVision, model_path="Xkev/Llama-3.2V-11B-cot"
+    ),
+    'coconut-latte-s0': partial(CoconutVision, model_path="Xkev/Llama-3.2V-11B-cot", scheduled_stage=0, c_thought=2),
+    'coconut-latte-s1': partial(CoconutVision, model_path="Xkev/Llama-3.2V-11B-cot", scheduled_stage=1, c_thought=2),
+    'coconut-latte-s2': partial(CoconutVision, model_path="Xkev/Llama-3.2V-11B-cot", scheduled_stage=2, c_thought=2),
+    'coconut-latte-s3': partial(CoconutVision, model_path="Xkev/Llama-3.2V-11B-cot",  scheduled_stage=3, c_thought=2),
+
+    # Thinking variations
+    'coconut-latte-t1': partial(CoconutVision, model_path="Xkev/Llama-3.2V-11B-cot",  scheduled_stage=2, c_thought=1),
+    'coconut_think3': partial(CoconutVision, model_path="Xkev/Llama-3.2V-11B-cot", scheduled_stage=2, c_thought=3),
+    'coconut_think4': partial(CoconutVision, model_path="Xkev/Llama-3.2V-11B-cot", scheduled_stage=2, c_thought=4),
+
+    # Combined variations
+    'coconut_s0t2': partial(CoconutVision, scheduled_stage=0, c_thought=2),
+    'coconut_s2t4': partial(CoconutVision, scheduled_stage=2, c_thought=4),
+    'coconut_s3t1': partial(CoconutVision, scheduled_stage=3, c_thought=1),
+}
+
 molmo_series = {
     "molmoE-1B-0924": partial(molmo, model_path="allenai/MolmoE-1B-0924"),
     "molmo-7B-D-0924": partial(molmo, model_path="allenai/Molmo-7B-D-0924"),
@@ -1753,7 +1773,7 @@ model_groups = [
     slime_series, eagle_series, moondream_series, llama_series, molmo_series,
     kosmos_series, points_series, nvlm_series, vintern_series, h2ovl_series,
     aria_series, smolvlm_series, sail_series, valley_series, vita_series,
-    ross_series, emu_series, ola_series, ursa_series, gemma_series,
+    ross_series, emu_series, ola_series, ursa_series, gemma_series,coconut_series,
     long_vita_series, ristretto_series, kimi_series, aguvis_series, hawkvl_series, 
     flash_vl, kimi_vllm_series, oryx_series, treevgr_series, varco_vision_series, qtunevl_series, xvl_series, thyme_series,logics_series, cosmos_series
 ]
