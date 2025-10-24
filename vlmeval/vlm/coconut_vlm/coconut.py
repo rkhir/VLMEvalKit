@@ -151,10 +151,19 @@ class Coconut(nn.Module):
             for idx_pair in filling_indices:
                 batch_idx, token_idx = idx_pair
 
-                # replace it with the preceding last hidden states
-                tensor_list[batch_idx][token_idx] = hidden_states[
-                    batch_idx, token_idx - 1 - hidden_states_offset, :
-                ]
+                # Calculate the index for hidden states
+                hidden_idx = token_idx - 1 - hidden_states_offset
+
+                # Check bounds to avoid IndexError
+                if hidden_idx >= 0 and hidden_idx < hidden_states.shape[1]:
+                    # replace it with the preceding last hidden states
+                    tensor_list[batch_idx][token_idx] = hidden_states[
+                        batch_idx, hidden_idx, :
+                    ]
+                else:
+                    # Skip this replacement if index is out of bounds
+                    # This can happen when the latent token position is outside the current compute range
+                    continue
 
             # assemble the new inputs_embeds
             inputs_embeds = torch.stack(
