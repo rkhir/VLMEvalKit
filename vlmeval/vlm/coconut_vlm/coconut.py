@@ -39,7 +39,7 @@ class Coconut(nn.Module):
         else:
             self.embedding = self.base_causallm.get_input_embeddings()
 
-    def forward(self, input_ids, attention_mask, labels, position_ids, pixel_values=None, aspect_ratio_ids=None, **kwargs):
+    def forward(self, input_ids, attention_mask, labels, position_ids, pixel_values=None, aspect_ratio_ids=None, aspect_ratio_mask=None, **kwargs):
 
         logits = []
 
@@ -66,12 +66,6 @@ class Coconut(nn.Module):
         for pass_idx in range(max_n_latents):
 
             if kv_cache == None:
-                forward_kwargs = {
-                    "inputs_embeds": inputs_embeds[:, next_compute_range[0] : next_compute_range[1], :],
-                    "attention_mask": attention_mask[:, next_compute_range[0] : next_compute_range[1]],
-                    "position_ids": position_ids[:, next_compute_range[0] : next_compute_range[1]],
-                    "output_hidden_states": True,
-                }
                 if pixel_values is not None and next_compute_range[0] == 0:
                     forward_kwargs = {
                         "input_ids": input_ids[:, next_compute_range[0]: next_compute_range[1]],
@@ -82,6 +76,15 @@ class Coconut(nn.Module):
                     }
                     if aspect_ratio_ids is not None:
                         forward_kwargs["aspect_ratio_ids"] = aspect_ratio_ids
+                    if aspect_ratio_mask is not None:
+                        forward_kwargs["aspect_ratio_mask"] = aspect_ratio_mask
+                else:
+                    forward_kwargs = {
+                        "inputs_embeds": inputs_embeds[:, next_compute_range[0] : next_compute_range[1], :],
+                        "attention_mask": attention_mask[:, next_compute_range[0] : next_compute_range[1]],
+                        "position_ids": position_ids[:, next_compute_range[0] : next_compute_range[1]],
+                        "output_hidden_states": True,
+                    }
                 outputs = self.base_causallm(**forward_kwargs)
                 hidden_states_offset = 0
 
@@ -208,6 +211,7 @@ class Coconut(nn.Module):
         attention_mask,  # attention_mask is not used
         pixel_values=None,
         aspect_ratio_ids=None,
+        aspect_ratio_mask=None,
         max_new_tokens=16,
         output_embedding=False,
         synced_gpus=False,
@@ -230,6 +234,7 @@ class Coconut(nn.Module):
             ).reshape(1, -1),
             pixel_values=pixel_values,
             aspect_ratio_ids=aspect_ratio_ids,
+            aspect_ratio_mask=aspect_ratio_mask,
         )
         inputs_embeds = outputs.inputs_embeds
 

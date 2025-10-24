@@ -223,12 +223,19 @@ class CoconutVision(BaseModel):
 
         if 'aspect_ratio_ids' in inputs and inputs['aspect_ratio_ids'] is not None:
             generate_kwargs['aspect_ratio_ids'] = inputs['aspect_ratio_ids']
+            if 'aspect_ratio_mask' in inputs and inputs['aspect_ratio_mask'] is not None:
+                generate_kwargs['aspect_ratio_mask'] = inputs['aspect_ratio_mask']
         else:
-            # Generate aspect_ratio_ids if not provided by processor
-            # For mllama models, we need to provide aspect_ratio_ids when pixel_values are present
-            # Default to aspect ratio id 0 (1:1 ratio) if not available
-            batch_size = inputs['pixel_values'].shape[0]
-            generate_kwargs['aspect_ratio_ids'] = torch.zeros((batch_size,), dtype=torch.long, device=self.device)
+            # Generate aspect_ratio_ids and aspect_ratio_mask if not provided by processor
+            # For mllama models, we need to provide both when pixel_values are present
+            batch_size, max_num_images, max_num_tiles = inputs['pixel_values'].shape[:3]
+
+            # Default to aspect ratio id 1 (1:1 ratio, offset by 1 as per mllama docs)
+            generate_kwargs['aspect_ratio_ids'] = torch.ones((batch_size, max_num_images), dtype=torch.long, device=self.device)
+
+            # Create aspect_ratio_mask - for single tile images, mask the first tile only
+            generate_kwargs['aspect_ratio_mask'] = torch.zeros((batch_size, max_num_images, max_num_tiles), dtype=torch.long, device=self.device)
+            generate_kwargs['aspect_ratio_mask'][:, :, 0] = 1  # Enable first tile for all images
 
         with torch.no_grad():
             outputs = self.model.generate(**generate_kwargs, **self.kwargs)
