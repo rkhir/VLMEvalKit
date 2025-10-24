@@ -151,21 +151,10 @@ class Coconut(nn.Module):
             for idx_pair in filling_indices:
                 batch_idx, token_idx = idx_pair
 
-                # Calculate the index for hidden states
-                hidden_idx = token_idx - 1 - hidden_states_offset
-
-                # Check bounds to avoid IndexError
-                if hidden_idx >= 0 and hidden_idx < hidden_states.shape[1]:
-                    # replace it with the preceding last hidden states
-                    replacement_tensor = hidden_states[batch_idx, hidden_idx, :]
-                    # Ensure tensors are on the same device and have same dtype
-                    original_tensor = tensor_list[batch_idx][token_idx]
-                    if replacement_tensor.device != original_tensor.device:
-                        replacement_tensor = replacement_tensor.to(original_tensor.device)
-                    if replacement_tensor.dtype != original_tensor.dtype:
-                        replacement_tensor = replacement_tensor.to(original_tensor.dtype)
-                    tensor_list[batch_idx][token_idx] = replacement_tensor
-                # If out of bounds, keep the original tensor (no replacement)
+                # replace it with the preceding last hidden states
+                tensor_list[batch_idx][token_idx] = hidden_states[
+                    batch_idx, token_idx - 1 - hidden_states_offset, :
+                ]
 
             # assemble the new inputs_embeds
             inputs_embeds = torch.stack(
@@ -203,11 +192,6 @@ class Coconut(nn.Module):
         logits = torch.cat(logits, dim=-2)
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
-
-        # Clamp labels to valid vocabulary range to prevent CUDA assertion
-        vocab_size = shift_logits.size(-1)
-        shift_labels = torch.clamp(shift_labels, 0, vocab_size - 1)
-
         loss_fct = CrossEntropyLoss()
         loss = loss_fct(
             shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)

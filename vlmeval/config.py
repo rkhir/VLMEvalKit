@@ -1585,7 +1585,7 @@ coconut_series = {
     # Thinking variations
     'coconut-latte-t1': partial(CoconutVision, model_path="Xkev/Llama-3.2V-11B-cot",  scheduled_stage=2, c_thought=1),
     'coconut_think3': partial(CoconutVision, model_path="Xkev/Llama-3.2V-11B-cot", scheduled_stage=2, c_thought=3),
-    'coconut_think4': partial(CoconutVision, model_path="Xkev/Llama-3.2V-11B-cot", scheduled_stage=2, c_thought=4),
+    'coconut-latte-t4': partial(CoconutVision, model_path="Xkev/Llama-3.2V-11B-cot", scheduled_stage=2, c_thought=4),
 
     # Combined variations
     'coconut_s0t2': partial(CoconutVision, scheduled_stage=0, c_thought=2),
