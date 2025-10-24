@@ -151,14 +151,6 @@ class Coconut(nn.Module):
             for idx_pair in filling_indices:
                 batch_idx, token_idx = idx_pair
 
-                # Calculate the index for hidden states
-                hidden_idx = token_idx - 1 - hidden_states_offset
-
-                # Add debugging to understand the indexing issue
-                print(f"DEBUG FORWARD - Coconut reasoning: token_idx={token_idx}, hidden_states_offset={hidden_states_offset}, hidden_idx={hidden_idx}")
-                print(f"DEBUG FORWARD - hidden_states.shape={hidden_states.shape}, inputs_embeds.shape={inputs_embeds.shape}")
-                print(f"DEBUG FORWARD - next_compute_range={next_compute_range}, pass_idx={pass_idx}")
-
                 # replace it with the preceding last hidden states
                 tensor_list[batch_idx][token_idx] = hidden_states[
                     batch_idx, token_idx - 1 - hidden_states_offset, :
@@ -247,28 +239,7 @@ class Coconut(nn.Module):
         inputs_embeds = outputs.inputs_embeds
 
         # get the first token using the current hidden state
-        # Add debugging logs to investigate vocabulary mismatch
-        logits_shape = outputs.logits.shape
-        logits_vocab_size = outputs.logits.size(-1)
-        tokenizer_vocab_size = len(self.base_causallm.get_input_embeddings().weight)
-
-        print(f"DEBUG - Logits shape: {logits_shape}")
-        print(f"DEBUG - Logits vocab size: {logits_vocab_size}")
-        print(f"DEBUG - Model embedding vocab size: {tokenizer_vocab_size}")
-        print(f"DEBUG - Logits last token shape: {outputs.logits[0, -1].shape}")
-        print(f"DEBUG - Logits last token min/max: {outputs.logits[0, -1].min().item():.4f}/{outputs.logits[0, -1].max().item():.4f}")
-
-        # Check for NaN/Inf in logits
-        has_nan = torch.isnan(outputs.logits[0, -1]).any()
-        has_inf = torch.isinf(outputs.logits[0, -1]).any()
-        print(f"DEBUG - Logits contain NaN: {has_nan}, Inf: {has_inf}")
-
-        if logits_vocab_size != tokenizer_vocab_size:
-            print(f"WARNING - Vocabulary size mismatch! Logits: {logits_vocab_size}, Model: {tokenizer_vocab_size}")
-
         next_token = torch.argmax(outputs.logits[0, -1]).item()
-        print(f"DEBUG - Selected token ID: {next_token}")
-        print(f"DEBUG - Token ID valid range: [0, {logits_vocab_size-1}]")
         tokens.append(next_token)
         new_token_embed = self.embedding(
             torch.tensor(next_token, device=input_ids.device)

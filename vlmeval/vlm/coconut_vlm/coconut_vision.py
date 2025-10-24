@@ -45,7 +45,7 @@ class CoconutVision(BaseModel):
     INTERLEAVE = False
 
     def __init__(self,
-                 model_path='Xkev/Llama-3.2V-11B-cot',
+                 model_path='meta-llama/Llama-3.2-11B-Vision-Instruct',
                  c_thought=2,
                  scheduled_stage=2,
                  max_latent_stage=3,
