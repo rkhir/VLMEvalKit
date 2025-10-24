@@ -151,6 +151,14 @@ class Coconut(nn.Module):
             for idx_pair in filling_indices:
                 batch_idx, token_idx = idx_pair
 
+                # Calculate the index for hidden states
+                hidden_idx = token_idx - 1 - hidden_states_offset
+
+                # Add debugging to understand the indexing issue
+                print(f"DEBUG FORWARD - Coconut reasoning: token_idx={token_idx}, hidden_states_offset={hidden_states_offset}, hidden_idx={hidden_idx}")
+                print(f"DEBUG FORWARD - hidden_states.shape={hidden_states.shape}, inputs_embeds.shape={inputs_embeds.shape}")
+                print(f"DEBUG FORWARD - next_compute_range={next_compute_range}, pass_idx={pass_idx}")
+
                 # replace it with the preceding last hidden states
                 tensor_list[batch_idx][token_idx] = hidden_states[
                     batch_idx, token_idx - 1 - hidden_states_offset, :
