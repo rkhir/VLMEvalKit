@@ -212,19 +212,21 @@ class CoconutVision(BaseModel):
             else:
                 self.kwargs['max_new_tokens'] = 1024
 
-        # Add position_ids for Coconut
         seq_len = inputs['input_ids'].shape[1]
         inputs['position_ids'] = torch.arange(seq_len, device=self.device).unsqueeze(0)
 
-        # Generate with Coconut model
+        generate_kwargs = {
+            'input_ids': inputs['input_ids'],
+            'attention_mask': inputs['attention_mask'],
+            'pixel_values': inputs['pixel_values'],
+        }
+
+        if 'aspect_ratio_ids' in inputs and inputs['aspect_ratio_ids'] is not None:
+            generate_kwargs['aspect_ratio_ids'] = inputs['aspect_ratio_ids']
+
         with torch.no_grad():
-            outputs = self.model.generate(
-                input_ids=inputs['input_ids'],
-                attention_mask=inputs['attention_mask'],
-                pixel_values=inputs['pixel_values'],
-                aspect_ratio_ids=inputs.get('aspect_ratio_ids'),
-                **self.kwargs
-            )
+            outputs = self.model.generate(**generate_kwargs, **self.kwargs)
+
 
         generated_text = self.processor.tokenizer.decode(
             outputs[0][inputs['input_ids'].shape[1]:],
