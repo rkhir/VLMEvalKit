@@ -72,9 +72,14 @@ class Coconut(nn.Module):
                     "position_ids": position_ids[:, next_compute_range[0] : next_compute_range[1]],
                     "output_hidden_states": True,
                 }
-                if pixel_values is not None:
-                    forward_kwargs["pixel_values"] = pixel_values
-                
+                if pixel_values is not None and next_compute_range[0] == 0:
+                    forward_kwargs = {
+                        "input_ids": input_ids[:, next_compute_range[0]: next_compute_range[1]],
+                        "attention_mask": attention_mask[:, next_compute_range[0]: next_compute_range[1]],
+                        "position_ids": position_ids[:, next_compute_range[0]: next_compute_range[1]],
+                        "pixel_values": pixel_values,
+                        "output_hidden_states": True,
+                    }
                 outputs = self.base_causallm(**forward_kwargs)
                 hidden_states_offset = 0
 
