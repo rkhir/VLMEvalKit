@@ -157,13 +157,15 @@ class Coconut(nn.Module):
                 # Check bounds to avoid IndexError
                 if hidden_idx >= 0 and hidden_idx < hidden_states.shape[1]:
                     # replace it with the preceding last hidden states
-                    tensor_list[batch_idx][token_idx] = hidden_states[
-                        batch_idx, hidden_idx, :
-                    ]
-                else:
-                    # Skip this replacement if index is out of bounds
-                    # This can happen when the latent token position is outside the current compute range
-                    continue
+                    replacement_tensor = hidden_states[batch_idx, hidden_idx, :]
+                    # Ensure tensors are on the same device and have same dtype
+                    original_tensor = tensor_list[batch_idx][token_idx]
+                    if replacement_tensor.device != original_tensor.device:
+                        replacement_tensor = replacement_tensor.to(original_tensor.device)
+                    if replacement_tensor.dtype != original_tensor.dtype:
+                        replacement_tensor = replacement_tensor.to(original_tensor.dtype)
+                    tensor_list[batch_idx][token_idx] = replacement_tensor
+                # If out of bounds, keep the original tensor (no replacement)
 
             # assemble the new inputs_embeds
             inputs_embeds = torch.stack(
