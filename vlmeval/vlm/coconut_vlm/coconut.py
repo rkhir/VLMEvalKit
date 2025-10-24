@@ -203,6 +203,11 @@ class Coconut(nn.Module):
         logits = torch.cat(logits, dim=-2)
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
+
+        # Clamp labels to valid vocabulary range to prevent CUDA assertion
+        vocab_size = shift_logits.size(-1)
+        shift_labels = torch.clamp(shift_labels, 0, vocab_size - 1)
+
         loss_fct = CrossEntropyLoss()
         loss = loss_fct(
             shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)
