@@ -207,7 +207,7 @@ class CoconutVision(BaseModel):
 
         # Set max tokens based on dataset
         if not self.use_custom_prompt(dataset):
-            if DATASET_TYPE(dataset) == 'MCQ' or DATASET_TYPE(dataset) == 'Y/N':
+            if dataset is not None and (DATASET_TYPE(dataset) == 'MCQ' or DATASET_TYPE(dataset) == 'Y/N'):
                 self.kwargs['max_new_tokens'] = 512
             else:
                 self.kwargs['max_new_tokens'] = 1024
@@ -222,6 +222,7 @@ class CoconutVision(BaseModel):
                 input_ids=inputs['input_ids'],
                 attention_mask=inputs['attention_mask'],
                 pixel_values=inputs['pixel_values'],
+                aspect_ratio_ids=inputs.get('aspect_ratio_ids'),
                 **self.kwargs
             )
 
