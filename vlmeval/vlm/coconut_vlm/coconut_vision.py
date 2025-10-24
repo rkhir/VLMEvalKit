@@ -223,6 +223,12 @@ class CoconutVision(BaseModel):
 
         if 'aspect_ratio_ids' in inputs and inputs['aspect_ratio_ids'] is not None:
             generate_kwargs['aspect_ratio_ids'] = inputs['aspect_ratio_ids']
+        else:
+            # Generate aspect_ratio_ids if not provided by processor
+            # For mllama models, we need to provide aspect_ratio_ids when pixel_values are present
+            # Default to aspect ratio id 0 (1:1 ratio) if not available
+            batch_size = inputs['pixel_values'].shape[0]
+            generate_kwargs['aspect_ratio_ids'] = torch.zeros((batch_size,), dtype=torch.long, device=self.device)
 
         with torch.no_grad():
             outputs = self.model.generate(**generate_kwargs, **self.kwargs)
