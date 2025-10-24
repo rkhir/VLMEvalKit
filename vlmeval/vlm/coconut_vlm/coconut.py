@@ -39,7 +39,7 @@ class Coconut(nn.Module):
         else:
             self.embedding = self.base_causallm.get_input_embeddings()
 
-    def forward(self, input_ids, attention_mask, labels, position_ids, pixel_values=None, **kwargs):
+    def forward(self, input_ids, attention_mask, labels, position_ids, pixel_values=None, aspect_ratio_ids=None, **kwargs):
 
         logits = []
 
@@ -80,6 +80,8 @@ class Coconut(nn.Module):
                         "pixel_values": pixel_values,
                         "output_hidden_states": True,
                     }
+                    if aspect_ratio_ids is not None:
+                        forward_kwargs["aspect_ratio_ids"] = aspect_ratio_ids
                 outputs = self.base_causallm(**forward_kwargs)
                 hidden_states_offset = 0
 
@@ -205,6 +207,7 @@ class Coconut(nn.Module):
         input_ids,
         attention_mask,  # attention_mask is not used
         pixel_values=None,
+        aspect_ratio_ids=None,
         max_new_tokens=16,
         output_embedding=False,
         synced_gpus=False,
@@ -226,6 +229,7 @@ class Coconut(nn.Module):
                 0, input_ids.shape[1], dtype=torch.long, device=input_ids.device
             ).reshape(1, -1),
             pixel_values=pixel_values,
+            aspect_ratio_ids=aspect_ratio_ids,
         )
         inputs_embeds = outputs.inputs_embeds
 
