@@ -7,7 +7,7 @@ from torch.nn import CrossEntropyLoss
 from collections import namedtuple
 from transformers.models.gpt2 import GPT2LMHeadModel
 
-Outputs = namedtuple("Outputs", ["loss", "inputs_embeds", "logits"])
+Outputs = namedtuple("Outputs", ["loss", "inputs_embeds", "logits", "past_key_values", "filled_latents"])
 MAX_N_LATENT = 8
 
 ## we may need a class as wrapper for the base (llava-cot)
