@@ -125,8 +125,7 @@ class Coconut(nn.Module):
 
             hidden_states = outputs.hidden_states[-1]  # Get the last layer hidden states
             seg_len = hidden_states.shape[1]
-            if kwargs['use_cache']:
-                kv_cache = outputs.past_key_values
+            kv_cache = outputs.past_key_values
 
             # feedback the continuous thoughts to the input_embeds
 
