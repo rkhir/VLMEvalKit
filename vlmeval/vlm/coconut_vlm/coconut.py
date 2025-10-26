@@ -219,7 +219,7 @@ class Coconut(nn.Module):
             self,
             input_ids,
             attention_mask,
-            labels: Optional[torch.Tensor],
+            labels,
             position_ids,
             pixel_values=None,
             aspect_ratio_ids=None,
