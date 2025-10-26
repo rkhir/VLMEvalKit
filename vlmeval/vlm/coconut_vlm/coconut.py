@@ -39,7 +39,7 @@ class Coconut(nn.Module):
         else:
             self.embedding = self.base_causallm.get_input_embeddings()
 
-    def forward(self, input_ids, attention_mask, labels, position_ids, pixel_values=None, aspect_ratio_ids=None, aspect_ratio_mask=None, **kwargs):
+    def forward(self, input_ids, attention_mask, labels, position_ids, pixel_values=None, aspect_ratio_ids=None, aspect_ratio_mask=None, compute_loss=False,**kwargs):
 
         logits = []
 
@@ -123,19 +123,26 @@ class Coconut(nn.Module):
                 ),
             )
 
-            hidden_states = outputs.hidden_states[
-                -1
-            ]  # Get the last layer hidden states
-            kv_cache = outputs.past_key_values
+            hidden_states = outputs.hidden_states[-1]  # Get the last layer hidden states
+            seg_len = hidden_states.shape[1]
+            if kwargs['use_cache']:
+                kv_cache = outputs.past_key_values
 
             # feedback the continuous thoughts to the input_embeds
 
             # first decide the positions to feedback
-            filling_indices = [
-                (instance_idx, mask_list[pass_idx])
-                for instance_idx, mask_list in enumerate(latent_lists)
-                if len(mask_list) > pass_idx
-            ]
+            #filling_indices = [
+            #    (instance_idx, mask_list[pass_idx])
+            #    for instance_idx, mask_list in enumerate(latent_lists)
+            #    if len(mask_list) > pass_idx
+            #]
+            filling_indices = []
+            for instance_idx, mask_list in enumerate(latent_lists):
+                if pass_idx < len(mask_list):
+                    token_idx = mask_list[pass_idx]
+                    hidden_idx = token_idx - 1 - hidden_states_offset
+                    if 0 <= hidden_idx < seg_len:
+                        filling_indices.append((instance_idx, token_idx, hidden_idx))
 
             # to avoid in-place operations
             # break down inputs_embeds (bs, len, hidden_size) into a list of list of 1-d tensors
@@ -148,13 +155,22 @@ class Coconut(nn.Module):
             ]
 
             # replace some of them with continuous thoughts
-            for idx_pair in filling_indices:
-                batch_idx, token_idx = idx_pair
+            #for idx_pair in filling_indices:
+            #    batch_idx, token_idx = idx_pair
 
                 # replace it with the preceding last hidden states
-                tensor_list[batch_idx][token_idx] = hidden_states[
-                    batch_idx, token_idx - 1 - hidden_states_offset, :
-                ]
+            #    tensor_list[batch_idx][token_idx] = hidden_states[
+            #        batch_idx, token_idx - 1 - hidden_states_offset, :
+            #    ]
+
+            for (b, token_idx, hidden_idx) in filling_indices:
+                rep = hidden_states[b, hidden_idx, :]
+                # maintain dtype/device
+                if rep.dtype != tensor_list[b][token_idx].dtype:
+                    rep = rep.to(tensor_list[b][token_idx].dtype)
+                if rep.device != tensor_list[b][token_idx].device:
+                    rep = rep.to(tensor_list[b][token_idx].device)
+                tensor_list[b][token_idx] = rep
 
             # assemble the new inputs_embeds
             inputs_embeds = torch.stack(
@@ -188,14 +204,15 @@ class Coconut(nn.Module):
         logits.append(outputs.logits)
 
         self.gen_forward_cnt += max_n_latents + 1
-
-        logits = torch.cat(logits, dim=-2)
-        shift_logits = logits[..., :-1, :].contiguous()
-        shift_labels = labels[..., 1:].contiguous()
-        loss_fct = CrossEntropyLoss()
-        loss = loss_fct(
-            shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)
-        )
+        loss = None
+        if compute_loss and labels is not None:
+            logits = torch.cat(logits, dim=-2)
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            loss_fct = CrossEntropyLoss()
+            loss = loss_fct(
+                shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)
+            )
 
         return Outputs(loss=loss, inputs_embeds=inputs_embeds, logits=logits)
 
@@ -224,7 +241,7 @@ class Coconut(nn.Module):
 
         tokens = input_ids[0].detach().tolist()
 
-        labels = input_ids.clone()  # placeholder. not used.
+        labels = None #input_ids.clone()  # placeholder. not used.
         outputs = self.forward(
             input_ids,
             torch.ones_like(input_ids, device=input_ids.device),
@@ -235,6 +252,8 @@ class Coconut(nn.Module):
             pixel_values=pixel_values,
             aspect_ratio_ids=aspect_ratio_ids,
             aspect_ratio_mask=aspect_ratio_mask,
+            compute_loss=False,
+            use_cache=False
         )
         inputs_embeds = outputs.inputs_embeds
 

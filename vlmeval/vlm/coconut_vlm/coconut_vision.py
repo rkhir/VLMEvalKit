@@ -84,7 +84,8 @@ class CoconutVision(BaseModel):
         embeddings = self.base_model.get_input_embeddings()
         target_id = self.processor.tokenizer.convert_tokens_to_ids("<<")
         for token_id in [self.latent_id, self.start_id, self.end_id]:
-            embeddings.weight.data[token_id] = embeddings.weight.data[target_id]
+            with torch.no_grad():
+                embeddings.weight.data[token_id] = embeddings.weight.data[target_id]
 
         # Wrap with Coconut
         self.model = Coconut(
