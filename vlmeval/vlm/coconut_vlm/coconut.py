@@ -205,8 +205,8 @@ class Coconut(nn.Module):
 
         self.gen_forward_cnt += max_n_latents + 1
         loss = None
+        logits = torch.cat(logits, dim=-2)
         if compute_loss and labels is not None:
-            logits = torch.cat(logits, dim=-2)
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
             loss_fct = CrossEntropyLoss()
