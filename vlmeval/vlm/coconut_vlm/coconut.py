@@ -452,7 +452,7 @@ class Coconut(nn.Module):
         # 1) Do the Coconut “thinking” pass; KEEP PKV
         outs = self.forward(
             input_ids=input_ids,
-            attention_mask=torch.ones_like(input_ids, device=input_ids.device),
+            attention_mask=attention_mask, #torch.ones_like(input_ids, device=input_ids.device),
             labels=None,
             position_ids=torch.arange(0, input_ids.shape[1], dtype=torch.long, device=input_ids.device).unsqueeze(0),
             pixel_values=pixel_values,
