@@ -205,7 +205,10 @@ class CoconutVision(BaseModel):
         # Process inputs
         input_text = self.processor.apply_chat_template(messages, add_generation_prompt=True)
         inputs = self.processor(image, input_text, return_tensors='pt').to(self.device)
-
+        from pprint import pprint
+        pprint(f'inputs with image:>>>>>  {inputs}\n')
+        pprint(f'input_text just text:>>>>>  {input_text} \n')
+        return
         # Set max tokens based on dataset
         if not self.use_custom_prompt(dataset):
             if dataset is not None and (DATASET_TYPE(dataset) == 'MCQ' or DATASET_TYPE(dataset) == 'Y/N'):
