@@ -7,15 +7,12 @@ from torch.nn import CrossEntropyLoss
 from collections import namedtuple
 from transformers.models.gpt2 import GPT2LMHeadModel
 
-Outputs = namedtuple("Outputs", ["loss", "inputs_embeds", "logits", "past_key_values", "filled_latents"])
-MAX_N_LATENT = 8
+Outputs = namedtuple("Outputs", ["loss", "inputs_embeds", "logits"])
 
-## we may need a class as wrapper for the base (llava-cot)
-# since llava-cot is using torch model not transformer model
-# how to create model.nn class to be a wrapper for the base model? (llava-cot)
+MAX_N_LATENT = 8  # kept for FSDP sync padding if you need it
+
 
 class Coconut(nn.Module):
-
     def __init__(
         self,
         base_causallm,
@@ -24,484 +21,264 @@ class Coconut(nn.Module):
         end_latent_id,
         eos_token_id,
     ):
-
-        super(Coconut, self).__init__()
-        self.gen_forward_cnt = 0
+        super().__init__()
         self.base_causallm = base_causallm
         self.latent_token_id = latent_token_id
         self.eos_token_id = eos_token_id
         self.start_latent_id = start_latent_id
         self.end_latent_id = end_latent_id
 
-        # tested with GPT2 and Llama3
+        # tested with GPT2 and Llama-family
         if isinstance(self.base_causallm, GPT2LMHeadModel):
             self.embedding = self.base_causallm.transformer.get_input_embeddings()
         else:
             self.embedding = self.base_causallm.get_input_embeddings()
 
-    def forward1(self, input_ids, attention_mask, labels, position_ids, pixel_values=None, aspect_ratio_ids=None, aspect_ratio_mask=None, compute_loss=False,**kwargs):
+        # internal state used by generate()
+        self._last_pkv = None
+        self._last_len = None
+        self.gen_forward_cnt = 0
 
-        logits = []
+    @torch.no_grad()
+    def _fill_checks(self, rep, dst):
+        # keep dtype/device aligned
+        if rep.dtype != dst.dtype:
+            rep = rep.to(dst.dtype)
+        if rep.device != dst.device:
+            rep = rep.to(dst.device)
+        return rep
 
-        latent_indices = (
-            input_ids == self.latent_token_id
-        ).nonzero()  # (num_latent_tokens_in_the_batch, 2)
+    def forward(
+        self,
+        input_ids,
+        attention_mask,
+        labels,
+        position_ids,
+        pixel_values=None,
+        aspect_ratio_ids=None,
+        aspect_ratio_mask=None,
+        compute_loss=False,
+        use_cache=True,
+        **kwargs,
+    ):
+        """
+        Computes hidden states in segments so that for every <|latent|> at t,
+        we inject the hidden state at t-1 into inputs_embeds[t].
+        """
 
-        latent_lists = [
-            [idx[1].item() for idx in latent_indices if idx[0] == i]
-            for i in range(input_ids.shape[0])
-        ]  # bs, num_latent_tokens_in_the_instance (difference across the batch)
+        B, T = input_ids.shape
+        logits_chunks = []
 
-        max_n_latents = max([len(l) for l in latent_lists])
+        # locate all latent positions per batch item
+        latent_mask = (input_ids == self.latent_token_id)
+        latent_indices = latent_mask.nonzero(as_tuple=False)  # [N_lat, 2]
+        latent_lists = [[pos.item() for b, pos in latent_indices if b.item() == i] for i in range(B)]
+        has_latents = any(len(l) > 0 for l in latent_lists)
 
-        next_compute_range = (0, input_ids.shape[1])
-        inputs_embeds = self.embedding(input_ids)
+        # base embeddings (we will overwrite some rows with "thoughts")
+        inputs_embeds = self.embedding(input_ids)  # [B, T, H]
 
-        if max_n_latents > 0:
-            next_compute_range = (0, latent_indices[:, 1].min().item())
-            # before the earliest latent token position
+        # build segment schedule:
+        segments = []
+        if has_latents:
+            first_latent = latent_indices[:, 1].min().item()
+            # 1) initial wide segment [0:first_latent)
+            if first_latent > 0:
+                segments.append((0, first_latent, "init"))
+
+            # 2) one segment for every preceding position (pos-1) we must fill
+            prev_positions = sorted(set(pos - 1 for lst in latent_lists for pos in lst if pos > 0))
+            for p in prev_positions:
+                segments.append((p, p + 1, "prev"))
+
+            # 3) tail after the last handled token
+            last_end = segments[-1][1] if len(segments) else 0
+            if last_end < T:
+                segments.append((last_end, T, "tail"))
+        else:
+            # no latents: single pass
+            segments.append((0, T, "all"))
 
         kv_cache = None
+        self._last_pkv = None
+        self._last_len = None
 
-        for pass_idx in range(max_n_latents):
+        for (start, end, kind) in segments:
+            L = end - start
+            assert L > 0, f"Empty segment {start}:{end}"
 
-            if kv_cache == None:
-                if pixel_values is not None and next_compute_range[0] == 0:
-                    forward_kwargs = {
-                        "input_ids": input_ids[:, next_compute_range[0]: next_compute_range[1]],
-                        "attention_mask": attention_mask[:, next_compute_range[0]: next_compute_range[1]],
-                        "position_ids": position_ids[:, next_compute_range[0]: next_compute_range[1]],
-                        "pixel_values": pixel_values,
-                        "output_hidden_states": True,
-                    }
+            if kv_cache is None:
+                # First call: ensure the preceding states see FULL prefix up to `end`.
+                if pixel_values is not None and start == 0:
+                    forward_kwargs = dict(
+                        input_ids=input_ids[:, :end],
+                        attention_mask=attention_mask[:, :end],
+                        position_ids=position_ids[:, :end],
+                        pixel_values=pixel_values,
+                        output_hidden_states=True,
+                        use_cache=use_cache,
+                        return_dict=True,
+                    )
                     if aspect_ratio_ids is not None:
                         forward_kwargs["aspect_ratio_ids"] = aspect_ratio_ids
                     if aspect_ratio_mask is not None:
                         forward_kwargs["aspect_ratio_mask"] = aspect_ratio_mask
+                    outputs = self.base_causallm(**forward_kwargs)
                 else:
-                    forward_kwargs = {
-                        "inputs_embeds": inputs_embeds[:, next_compute_range[0] : next_compute_range[1], :],
-                        "attention_mask": attention_mask[:, next_compute_range[0] : next_compute_range[1]],
-                        "position_ids": position_ids[:, next_compute_range[0] : next_compute_range[1]],
-                        "output_hidden_states": True,
-                    }
-                outputs = self.base_causallm(**forward_kwargs)
-                hidden_states_offset = 0
-
-            else:
-                # extract kv cache to reuse
-                past_key_values = [
-                    (
-                        k[:, :, : next_compute_range[0], :],
-                        v[:, :, : next_compute_range[0], :],
+                    outputs = self.base_causallm(
+                        inputs_embeds=inputs_embeds[:, :end, :],
+                        attention_mask=attention_mask[:, :end],
+                        position_ids=position_ids[:, :end],
+                        output_hidden_states=True,
+                        use_cache=use_cache,
+                        return_dict=True,
                     )
-                    for k, v in kv_cache
-                ]
-
+                hidden_states_offset = 0
+            else:
+                # Extend with the new span using PKV.
+                past_key_values = [(k[:, :, :start, :], v[:, :, :start, :]) for (k, v) in kv_cache]
                 outputs = self.base_causallm(
-                    inputs_embeds=inputs_embeds[
-                        :, next_compute_range[0] : next_compute_range[1], :
-                    ],
-                    attention_mask=attention_mask[:, : next_compute_range[1]],
-                    position_ids=position_ids[
-                        :, next_compute_range[0] : next_compute_range[1]
-                    ],
+                    inputs_embeds=inputs_embeds[:, start:end, :],  # only the new slice
+                    attention_mask=attention_mask[:, :end],       # prefix + new
+                    position_ids=position_ids[:, start:end],
                     past_key_values=past_key_values,
                     output_hidden_states=True,
+                    use_cache=use_cache,
+                    return_dict=True,
                 )
+                hidden_states_offset = start
 
-                hidden_states_offset = next_compute_range[0]
+            logits_chunks.append(outputs.logits)          # [B, L, V]
+            kv_cache = outputs.past_key_values if use_cache else None
 
-            logits.append(outputs.logits)
-
-            next_compute_range = (
-                next_compute_range[1],
-                (
-                    input_ids.shape[1]
-                    if pass_idx + 1 >= max_n_latents
-                    else next_compute_range[1] + 1
-                ),
-            )
-
-            hidden_states = outputs.hidden_states[-1]  # Get the last layer hidden states
+            # last layer hidden states for THIS segment only
+            hidden_states = outputs.hidden_states[-1]      # [B, L, H]
             seg_len = hidden_states.shape[1]
-            kv_cache = outputs.past_key_values
 
-            # feedback the continuous thoughts to the input_embeds
+            # inject "thoughts" for any latent whose preceding token lies inside this segment
+            if kind in ("init", "prev", "all"):
+                new_embeds = inputs_embeds.clone()
+                for b in range(B):
+                    for token_idx in latent_lists[b]:
+                        prev_global = token_idx - 1
+                        hidden_idx = prev_global - hidden_states_offset
+                        if 0 <= hidden_idx < seg_len:
+                            rep = hidden_states[b, hidden_idx, :].detach()  # detach to keep graph/memory sane
+                            rep = self._fill_checks(rep, new_embeds[b, token_idx, :])
+                            new_embeds[b, token_idx, :] = rep
+                inputs_embeds = new_embeds  # [B, T, H]
 
-            # first decide the positions to feedback
-            #filling_indices = [
-            #    (instance_idx, mask_list[pass_idx])
-            #    for instance_idx, mask_list in enumerate(latent_lists)
-            #    if len(mask_list) > pass_idx
-            #]
-            filling_indices = []
-            for instance_idx, mask_list in enumerate(latent_lists):
-                if pass_idx < len(mask_list):
-                    token_idx = mask_list[pass_idx]
-                    hidden_idx = token_idx - 1 - hidden_states_offset
-                    if 0 <= hidden_idx < seg_len:
-                        filling_indices.append((instance_idx, token_idx, hidden_idx))
+        # cache for generate()
+        self._last_pkv = kv_cache
+        self._last_len = T
 
-            # to avoid in-place operations
-            # break down inputs_embeds (bs, len, hidden_size) into a list of list of 1-d tensors
-            tensor_list = [
-                [
-                    inputs_embeds[batch_idx, pos, :]
-                    for pos in range(inputs_embeds.shape[1])
-                ]
-                for batch_idx in range(inputs_embeds.shape[0])
-            ]
+        # concat logits along time to [B, T, V]
+        logits = torch.cat(logits_chunks, dim=-2)
 
-            # replace some of them with continuous thoughts
-            #for idx_pair in filling_indices:
-            #    batch_idx, token_idx = idx_pair
-
-                # replace it with the preceding last hidden states
-            #    tensor_list[batch_idx][token_idx] = hidden_states[
-            #        batch_idx, token_idx - 1 - hidden_states_offset, :
-            #    ]
-
-            for (b, token_idx, hidden_idx) in filling_indices:
-                rep = hidden_states[b, hidden_idx, :]
-                # maintain dtype/device
-                if rep.dtype != tensor_list[b][token_idx].dtype:
-                    rep = rep.to(tensor_list[b][token_idx].dtype)
-                if rep.device != tensor_list[b][token_idx].device:
-                    rep = rep.to(tensor_list[b][token_idx].device)
-                tensor_list[b][token_idx] = rep
-
-            # assemble the new inputs_embeds
-            inputs_embeds = torch.stack(
-                [
-                    torch.stack(tensor_list[batch_idx])
-                    for batch_idx in range(inputs_embeds.shape[0])
-                ]
-            )
-
-        # final pass
-        outputs = self.base_causallm(
-            inputs_embeds=inputs_embeds[
-                :, next_compute_range[0] : next_compute_range[1], :
-            ],
-            attention_mask=attention_mask[:, : next_compute_range[1]],
-            position_ids=position_ids[:, next_compute_range[0] : next_compute_range[1]],
-            past_key_values=(
-                [
-                    (
-                        k[:, :, : next_compute_range[0], :],
-                        v[:, :, : next_compute_range[0], :],
-                    )
-                    for k, v in kv_cache
-                ]
-                if kv_cache
-                else None
-            ),
-            output_hidden_states=True,
-        )
-
-        logits.append(outputs.logits)
-
-        self.gen_forward_cnt += max_n_latents + 1
         loss = None
-        logits = torch.cat(logits, dim=-2)
         if compute_loss and labels is not None:
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
             loss_fct = CrossEntropyLoss()
-            loss = loss_fct(
-                shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)
-            )
+            loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
 
         return Outputs(loss=loss, inputs_embeds=inputs_embeds, logits=logits)
 
-    def forward(
-            self,
-            input_ids,
-            attention_mask,
-            labels,
-            position_ids,
-            pixel_values=None,
-            aspect_ratio_ids=None,
-            aspect_ratio_mask=None,
-            compute_loss: bool = False,
-            use_cache: bool = True,  # <= default True so we get PKV
-            **kwargs
-    ):
-        B, T = input_ids.shape
-        device = input_ids.device
-        logits_chunks = []
-        inputs_embeds = self.embedding(input_ids)
-
-        # --- collect ALL latent positions as (b, p)
-        latent_idx = (input_ids == self.latent_token_id).nonzero(as_tuple=False)  # [N, 2]
-        all_latents = [(int(b.item()), int(p.item())) for b, p in latent_idx]
-        cut_points = sorted(set(p for _, p in all_latents))  # positions of <|latent|>
-
-        # nothing to fill? fall back to single pass
-        if len(cut_points) == 0:
-            outs = self.base_causallm(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                pixel_values=pixel_values,
-                aspect_ratio_ids=aspect_ratio_ids,
-                aspect_ratio_mask=aspect_ratio_mask,
-                output_hidden_states=True,
-                use_cache=use_cache,
-            )
-            logits = outs.logits
-            loss = None
-            if compute_loss and labels is not None:
-                shift_logits = logits[..., :-1, :].contiguous()
-                shift_labels = labels[..., 1:].contiguous()
-                loss = CrossEntropyLoss()(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
-            return Outputs(loss=loss, inputs_embeds=inputs_embeds, logits=logits,
-                           past_key_values=outs.past_key_values, filled_latents=0)
-
-        kv_cache = None
-        cur = 0
-        filled = 0
-
-        # helper: slice kwargs once
-        def _vision_kwargs():
-            kw = {}
-            if pixel_values is not None: kw["pixel_values"] = pixel_values
-            if aspect_ratio_ids is not None: kw["aspect_ratio_ids"] = aspect_ratio_ids
-            if aspect_ratio_mask is not None: kw["aspect_ratio_mask"] = aspect_ratio_mask
-            return kw
-
-        # build tensor_list to avoid in-place on views
-        tensor_list = [
-            [inputs_embeds[b, t, :] for t in range(T)]
-            for b in range(B)
-        ]
-
-        for cp in cut_points:
-            if cp <= cur:
-                # latent at position 0 is degenerate; skip filling
-                continue
-
-            # forward over [cur:cp)
-            if kv_cache is None and cur == 0:
-                # allow vision on the first chunk
-                outs = self.base_causallm(
-                    input_ids=input_ids[:, cur:cp],
-                    attention_mask=attention_mask[:, cur:cp],
-                    position_ids=position_ids[:, cur:cp],
-                    output_hidden_states=True,
-                    use_cache=use_cache,
-                    **_vision_kwargs()
-                )
-                hidden_offset = 0
-            else:
-                # reuse cache for subsequent chunks
-                pkv = None
-                if kv_cache is not None:
-                    pkv = [(k[:, :, :cur, :], v[:, :, :cur, :]) for (k, v) in kv_cache]
-                outs = self.base_causallm(
-                    inputs_embeds=inputs_embeds[:, cur:cp, :],
-                    attention_mask=attention_mask[:, :cp],
-                    position_ids=position_ids[:, cur:cp],
-                    past_key_values=pkv,
-                    output_hidden_states=True,
-                    use_cache=use_cache,
-                )
-                hidden_offset = cur
-
-            logits_chunks.append(outs.logits)
-            H = outs.hidden_states[-1]  # [B, cp-cur, D]
-            seg_len = H.shape[1]
-            kv_cache = outs.past_key_values
-
-            # fill every latent exactly at cp for any batch
-            for (b, p) in all_latents:
-                if p == cp:
-                    hid_idx = p - 1 - hidden_offset
-                    if 0 <= hid_idx < seg_len:
-                        rep = H[b, hid_idx, :]
-                        # keep dtype/device
-                        if rep.dtype != tensor_list[b][p].dtype: rep = rep.to(tensor_list[b][p].dtype)
-                        if rep.device != tensor_list[b][p].device: rep = rep.to(tensor_list[b][p].device)
-                        tensor_list[b][p] = rep
-                        filled += 1
-
-            # reassemble inputs_embeds with updates
-            inputs_embeds = torch.stack([torch.stack(tensor_list[b]) for b in range(B)], dim=0)
-            cur = cp
-
-        # final tail [cur:T)
-        if cur < T:
-            pkv = None
-            if kv_cache is not None:
-                pkv = [(k[:, :, :cur, :], v[:, :, :cur, :]) for (k, v) in kv_cache]
-            outs = self.base_causallm(
-                inputs_embeds=inputs_embeds[:, cur:T, :],
-                attention_mask=attention_mask[:, :T],
-                position_ids=position_ids[:, cur:T],
-                past_key_values=pkv,
-                output_hidden_states=True,
-                use_cache=use_cache,
-            )
-            logits_chunks.append(outs.logits)
-            kv_cache = outs.past_key_values
-
-        logits = torch.cat(logits_chunks, dim=-2)  # [B, T, V]
-
-        loss = None
-        if compute_loss and labels is not None:
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            loss = CrossEntropyLoss()(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
-
-        self.gen_forward_cnt += len(cut_points) + 1
-        return Outputs(loss=loss, inputs_embeds=inputs_embeds, logits=logits, past_key_values=kv_cache, filled_latents=filled)
-
-    def train(self):
-        self.base_causallm.train()
+    def train(self, mode: bool = True):
+        self.base_causallm.train(mode)
+        return super().train(mode)
 
     def eval(self):
         self.base_causallm.eval()
 
-    def generate1(
+    @torch.no_grad()
+    def generate(
         self,
         input_ids,
-        attention_mask,  # attention_mask is not used
+        attention_mask,
         pixel_values=None,
         aspect_ratio_ids=None,
         aspect_ratio_mask=None,
         max_new_tokens=16,
         output_embedding=False,
         synced_gpus=False,
-        **kwargs
+        **kwargs,
     ):
-
-        self.gen_forward_cnt = 0
-
+        """
+        Cache-aware continuation generation after forward() has injected thoughts.
+        """
         assert input_ids.shape[0] == 1, "only support batch_size == 1 now"
+        device = input_ids.device
 
-        tokens = input_ids[0].detach().tolist()
-
-        labels = None #input_ids.clone()  # placeholder. not used.
+        # 1) Run forward once with cache so vision/context is established
         outputs = self.forward(
-            input_ids,
-            torch.ones_like(input_ids, device=input_ids.device),
-            labels,
-            torch.arange(
-                0, input_ids.shape[1], dtype=torch.long, device=input_ids.device
-            ).reshape(1, -1),
-            pixel_values=pixel_values,
-            aspect_ratio_ids=aspect_ratio_ids,
-            aspect_ratio_mask=aspect_ratio_mask,
-            compute_loss=False,
-            use_cache=False
-        )
-        inputs_embeds = outputs.inputs_embeds
-
-        # get the first token using the current hidden state
-        next_token = torch.argmax(outputs.logits[0, -1]).item()
-        tokens.append(next_token)
-        new_token_embed = self.embedding(
-            torch.tensor(next_token, device=input_ids.device)
-        ).view(1, 1, -1)
-        new_inputs_embeds = torch.cat((inputs_embeds, new_token_embed), dim=1)
-
-        # get other tokens
-        for _ in range(max_new_tokens - 1):
-            outputs = self.base_causallm(inputs_embeds=new_inputs_embeds)
-            self.gen_forward_cnt += 1
-            next_token = torch.argmax(outputs.logits[0, -1]).item()
-            if next_token == self.eos_token_id:
-                break
-            tokens.append(next_token)
-            new_token_embed = self.embedding(
-                torch.tensor(next_token, device=input_ids.device)
-            ).view(1, 1, -1)
-            new_inputs_embeds = torch.cat((new_inputs_embeds, new_token_embed), dim=1)
-
-        if synced_gpus:
-            # in FSDP, the number of forward pass need to be the same across devices
-            while (
-                self.gen_forward_cnt < max_new_tokens + MAX_N_LATENT
-            ):  # leave some room for latent tokens
-                self.gen_forward_cnt += 1
-                _ = self.base_causallm(inputs_embeds=new_inputs_embeds)
-
-        if output_embedding:
-            # for analysis purpose
-            return torch.tensor(tokens).view(1, -1), new_inputs_embeds
-
-        else:
-            return torch.tensor(tokens).view(1, -1)
-
-    def generate(
-            self,
-            input_ids,
-            attention_mask,
-            pixel_values=None,
-            aspect_ratio_ids=None,
-            aspect_ratio_mask=None,
-            max_new_tokens=16,
-            output_embedding=False,
-            synced_gpus=False,
-            **kwargs
-    ):
-        self.gen_forward_cnt = 0
-        assert input_ids.shape[0] == 1, "only support batch_size == 1 now"
-
-        # 1) Do the Coconut “thinking” pass; KEEP PKV
-        outs = self.forward(
             input_ids=input_ids,
-            attention_mask=torch.ones_like(input_ids, device=input_ids.device),
+            attention_mask=torch.ones_like(input_ids, device=device),
             labels=None,
-            position_ids=torch.arange(0, input_ids.shape[1], dtype=torch.long, device=input_ids.device).unsqueeze(0),
+            position_ids=torch.arange(0, input_ids.shape[1], dtype=torch.long, device=device).view(1, -1),
             pixel_values=pixel_values,
             aspect_ratio_ids=aspect_ratio_ids,
             aspect_ratio_mask=aspect_ratio_mask,
             compute_loss=False,
-            use_cache=True,  # IMPORTANT: keep KV with vision context
+            use_cache=True,
         )
-        print(f"Filled latents: {outs.filled_latents} / {int((input_ids == self.latent_token_id).sum())}")
+        inputs_embeds = outputs.inputs_embeds  # [1, T, H]
+        logits = outputs.logits               # [1, T, V]
 
-        logits = outs.logits
-        pkv = outs.past_key_values
-        inputs_embeds = outs.inputs_embeds
-
-        # 2) First next-token
-        next_token = torch.argmax(logits[0, -1], dim=-1).item()
+        # priming token
         tokens = input_ids[0].detach().tolist()
+        next_token = int(torch.argmax(logits[0, -1]))
+        if next_token == self.eos_token_id:
+            return torch.tensor(tokens + [next_token]).view(1, -1)
         tokens.append(next_token)
 
-        # 3) Incremental decoding using PKV (fast, keeps vision)
-        cur_len = input_ids.shape[1]
+        # prepare cache-aware decoding state
+        past = self._last_pkv
+        cur_len = self._last_len
+        attn = torch.ones(1, cur_len, dtype=torch.long, device=device)
+        pos = torch.arange(cur_len, device=device, dtype=torch.long).view(1, -1)
+
+        # 2) step-wise decode using input_ids (simpler & robust for RoPE)
         for _ in range(max_new_tokens - 1):
-            next_ids = torch.tensor([[next_token]], device=input_ids.device, dtype=torch.long)
-            # NOTE: give input_ids (not inputs_embeds) + past_key_values
-            step = self.base_causallm(
-                input_ids=next_ids,
-                past_key_values=pkv,
+            in_ids = torch.tensor([[next_token]], device=device, dtype=torch.long)  # [1,1]
+            attn = torch.cat([attn, torch.ones_like(attn[:, :1])], dim=1)
+            pos_next = pos[:, -1:] + 1
+            pos = torch.cat([pos, pos_next], dim=1)
+
+            out = self.base_causallm(
+                input_ids=in_ids,
+                attention_mask=attn,
+                position_ids=pos[:, -1:],  # position for the new token
+                past_key_values=past,
                 use_cache=True,
+                return_dict=True,
             )
+            past = out.past_key_values
             self.gen_forward_cnt += 1
-            pkv = step.past_key_values
-            next_token = torch.argmax(step.logits[0, -1], dim=-1).item()
+
+            next_token = int(torch.argmax(out.logits[0, -1]))
             if next_token == self.eos_token_id:
+                tokens.append(next_token)
                 break
             tokens.append(next_token)
-            cur_len += 1
 
+        # FSDP sync padding if needed
         if synced_gpus:
             while self.gen_forward_cnt < max_new_tokens + MAX_N_LATENT:
-                dummy = self.base_causallm(input_ids=torch.tensor([[self.eos_token_id]], device=input_ids.device),
-                                           past_key_values=pkv, use_cache=True)
+                _ = self.base_causallm(
+                    input_ids=torch.tensor([[self.eos_token_id]], device=device),
+                    attention_mask=attn,
+                    position_ids=pos[:, -1:],
+                    past_key_values=past,
+                    use_cache=True,
+                    return_dict=True,
+                )
                 self.gen_forward_cnt += 1
-                pkv = dummy.past_key_values
 
         if output_embedding:
-            # concatenate token embeddings for analysis, optional
-            with torch.no_grad():
-                new_ids = torch.tensor(tokens, device=input_ids.device).unsqueeze(0)
-                new_embeds = self.embedding(new_ids)
-            return torch.tensor(tokens).view(1, -1), new_embeds
-
-        return torch.tensor(tokens).view(1, -1)
+            # Return final embedding stream too
+            final_ids = torch.tensor(tokens, device=device, dtype=torch.long).view(1, -1)
+            final_embeds = self.embedding(final_ids)
+            return final_ids, final_embeds
+        else:
+            return torch.tensor(tokens, device=device, dtype=torch.long).view(1, -1)

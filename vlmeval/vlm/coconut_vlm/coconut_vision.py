@@ -177,6 +177,7 @@ class CoconutVision(BaseModel):
             prompt = (
                 f'Look at the image and answer the question carefully. '
                 f'Use step-by-step reasoning.\n'
+                f'Specify in your answer if you got the picture or not\n'
                 f'Question: {question}\n'
                 f'{latent_tokens}'
             )
