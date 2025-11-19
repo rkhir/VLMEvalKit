@@ -83,7 +83,7 @@ class Coconut(nn.Module):
 
 
         latent_lists = []
-
+        print('input shape >>>>>', input_ids)
         for i in range(input_ids.shape[0]):
             lst = []
             for idx in latent_indices:
