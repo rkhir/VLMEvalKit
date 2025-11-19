@@ -229,6 +229,7 @@ class CoconutVision(BaseModel):
             if 'aspect_ratio_mask' in inputs and inputs['aspect_ratio_mask'] is not None:
                 generate_kwargs['aspect_ratio_mask'] = inputs['aspect_ratio_mask']
         else:
+            print('No aspect ratio ids found in inputs. Generating aspect ratio ids and mask.')
             # Generate aspect_ratio_ids and aspect_ratio_mask if not provided by processor
             # For mllama models, we need to provide both when pixel_values are present
             batch_size, max_num_images, max_num_tiles = inputs['pixel_values'].shape[:3]
