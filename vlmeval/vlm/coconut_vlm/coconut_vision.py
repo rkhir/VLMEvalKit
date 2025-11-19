@@ -2,9 +2,9 @@ import torch
 from PIL import Image
 import os.path as osp
 import sys
-from ..base import BaseModel
-from ...smp import *
-from ...dataset import DATASET_TYPE
+from vlmeval.vlm.base import BaseModel
+from vlmeval.smp import *
+from vlmeval.dataset import DATASET_TYPE
 import re
 import numpy as np
 import torch.nn.functional as F
@@ -13,7 +13,8 @@ import copy
 import json
 from transformers import StoppingCriteria, StoppingCriteriaList
 
-from .coconut import Coconut
+
+from vlmeval.vlm.coconut_vlm.coconut import Coconut
 
 
 class StopOnStrings(StoppingCriteria):
@@ -62,7 +63,6 @@ class CoconutVision(BaseModel):
             torch_dtype=torch.bfloat16,
             device_map='auto',
         ).eval()
-
         self.device = 'cuda'
         self.processor = AutoProcessor.from_pretrained(model_path)
 
@@ -89,15 +89,21 @@ class CoconutVision(BaseModel):
 
         # Wrap with Coconut
         self.model = Coconut(
-            self.base_model,
-            self.latent_id,
-            self.start_id,
-            self.end_id,
-            self.processor.tokenizer.eos_token_id
+           self.base_model,
+           self.processor,
+           self.latent_id,
+           self.start_id,
+           self.end_id,
+           self.processor.tokenizer.eos_token_id
         )
         self.model.eval()
+        if 'Instruct' in model_path or 'cot' in model_path or 'CoT' in model_path:
+            kwargs_default = dict(do_sample=True, temperature=0.6, top_p=0.9)
+        else:
+            kwargs_default = dict(do_sample=False, max_new_tokens=2048, temperature=0.0, top_p=None, num_beams=1)
+        kwargs.update(kwargs_default)
+        self.kwargs = kwargs
 
-        # Store Coconut config
         self.c_thought = c_thought
         self.scheduled_stage = scheduled_stage
         self.max_latent_stage = max_latent_stage
@@ -107,7 +113,7 @@ class CoconutVision(BaseModel):
         kwargs.update(kwargs_default)
         print(f'Coconut Vision - Following kwargs received: {kwargs}, will use as generation config.')
         self.kwargs = kwargs
-        self.model_name = model_path
+
 
     def use_custom_prompt(self, dataset):
         if dataset is None:
@@ -182,7 +188,7 @@ class CoconutVision(BaseModel):
             )
         else:
             # Default case - add latent tokens to any question
-            prompt = f'{question}\n{latent_tokens}'
+            prompt = f'Look at the image and answer the question carefully.\n Use step-by-step reasoning and output the final answer. \n{question}\n{latent_tokens}'
 
         message = [dict(type='text', value=prompt)]
         message.extend([dict(type='image', value=s) for s in tgt_path])
@@ -192,23 +198,20 @@ class CoconutVision(BaseModel):
         """Main generation method using Coconut reasoning"""
         prompt, image_path = self.message_to_promptimg(message, dataset=dataset)
 
-        image = Image.open(image_path)
+        k = min(self.max_latent_stage, self.scheduled_stage) * self.c_thought
+        latent_tokens = f"<|start-latent|>" + "<|latent|>" * k + "<|end-latent|>"
+        prompt = prompt + latent_tokens
 
-        # Build messages for processor
+        image = Image.open(image_path)
         messages = [
             {'role': 'user', 'content': [
                 {'type': 'image'},
                 {'type': 'text', 'text': prompt}
             ]}
         ]
-
         # Process inputs
         input_text = self.processor.apply_chat_template(messages, add_generation_prompt=True)
         inputs = self.processor(image, input_text, return_tensors='pt').to(self.device)
-        from pprint import pprint
-        pprint(f'inputs with image:>>>>>  {inputs}\n')
-        pprint(f'input_text just text:>>>>>  {input_text} \n')
-        return
         # Set max tokens based on dataset
         if not self.use_custom_prompt(dataset):
             if dataset is not None and (DATASET_TYPE(dataset) == 'MCQ' or DATASET_TYPE(dataset) == 'Y/N'):
@@ -242,8 +245,8 @@ class CoconutVision(BaseModel):
             generate_kwargs['aspect_ratio_mask'][:, :, 0] = 1  # Enable first tile for all images
 
         with torch.no_grad():
-            outputs = self.model.generate(**generate_kwargs, **self.kwargs)
-
+            outputs = self.model.generate(**inputs, **self.kwargs)
+            self.kwargs['max_new_tokens']=300
 
         generated_text = self.processor.tokenizer.decode(
             outputs[0][inputs['input_ids'].shape[1]:],
@@ -255,12 +258,3 @@ class CoconutVision(BaseModel):
     def chat_inner(self, message, dataset=None):
         """Chat interface - delegates to generate_inner"""
         return self.generate_inner(message, dataset)
-
-    def get_coconut_stats(self):
-        return {
-            'c_thought': self.c_thought,
-            'scheduled_stage': self.scheduled_stage,
-            'max_latent_stage': self.max_latent_stage,
-            'latent_tokens_per_inference': min(self.max_latent_stage, self.scheduled_stage) * self.c_thought,
-            'forward_calls': getattr(self.model, 'gen_forward_cnt', 0)
-        }

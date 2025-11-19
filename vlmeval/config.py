@@ -1579,12 +1579,12 @@ coconut_series = {
     ),
     'coconut-latte-s0': partial(CoconutVision, model_path="meta-llama/Llama-3.2-11B-Vision-Instruct", scheduled_stage=0, c_thought=2),
     'coconut-latte-s1': partial(CoconutVision, model_path="meta-llama/Llama-3.2-11B-Vision-Instruct", scheduled_stage=1, c_thought=2),
-    'coconut-latte-s2': partial(CoconutVision, model_path="Xkev/Llama-3.2V-11B-cot", scheduled_stage=2, c_thought=2),
-    'coconut-latte-s3': partial(CoconutVision, model_path="Xkev/Llama-3.2V-11B-cot",  scheduled_stage=3, c_thought=2),
+    'coconut-latte-s2': partial(CoconutVision, model_path="meta-llama/Llama-3.2-11B-Vision-Instruct", scheduled_stage=2, c_thought=2),
+    'coconut-latte-s3': partial(CoconutVision, model_path="meta-llama/Llama-3.2-11B-Vision-Instruct",  scheduled_stage=3, c_thought=2),
 
     # Thinking variations
     'coconut-latte-t1': partial(CoconutVision, model_path="meta-llama/Llama-3.2-11B-Vision-Instruct",  scheduled_stage=2, c_thought=1),
-    'coconut_think3': partial(CoconutVision, model_path="meta-llama/Llama-3.2-11B-Vision-Instruct", scheduled_stage=2, c_thought=3),
+    'coconut-latte-t3': partial(CoconutVision, model_path="meta-llama/Llama-3.2-11B-Vision-Instruct", scheduled_stage=2, c_thought=3),
     'coconut-latte-t4': partial(CoconutVision, model_path="meta-llama/Llama-3.2-11B-Vision-Instruct", scheduled_stage=2, c_thought=4),
 
     # Combined variations
