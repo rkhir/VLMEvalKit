@@ -198,10 +198,6 @@ class CoconutVision(BaseModel):
         """Main generation method using Coconut reasoning"""
         prompt, image_path = self.message_to_promptimg(message, dataset=dataset)
 
-        k = min(self.max_latent_stage, self.scheduled_stage) * self.c_thought
-        latent_tokens = f"<|start-latent|>" + "<|latent|>" * k + "<|end-latent|>"
-        prompt = prompt + latent_tokens
-
         image = Image.open(image_path)
         messages = [
             {'role': 'user', 'content': [
