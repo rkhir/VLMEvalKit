@@ -68,7 +68,7 @@ class Coconut(nn.Module):
         self.end_latent_id = end_latent_id
         self.processor = processor
         self.base_causallm.config.use_cache = True
-        self._kv_cache = DynamicCache()
+        #self._kv_cache = DynamicCache()
 
         self.embedding = self.base_causallm.get_input_embeddings()
 
@@ -149,7 +149,7 @@ class Coconut(nn.Module):
                 "output_hidden_states": True,
                 "use_cache":True,
                 "return_dict": True,
-                "past_key_values":   self._kv_cache,
+                "past_key_values":   DynamicCache(),
                 "pixel_values": vision_kwargs["pixel_values"],
                 #"cross_attention_mask": vision_kwargs['cross_attention_mask'][:, next_compute_range[0]:next_compute_range[1], :, :],
                 "aspect_ratio_mask": vision_kwargs['aspect_ratio_mask'],
@@ -175,6 +175,7 @@ class Coconut(nn.Module):
 
                 hidden_states_offset = next_compute_range[0]
             else:
+                print(f'\n<<<using cache while thinking>>>>\n')
                 # extract kv cache to reuse
                 legacy_kv_cache = kv_cache.to_legacy_cache()
                 past_key_values = [
@@ -193,11 +194,14 @@ class Coconut(nn.Module):
                                       next_compute_range[1],
                                       dtype=torch.long,
                                       device=input_ids.device
-                                  ).unsqueeze(0), "past_key_values": past_key_values, "output_hidden_states": True,
-                                  "use_cache": True, "cache_position": torch.arange(
-                        next_compute_range[0], next_compute_range[1],
-                        device=input_ids.device
-                    ).unsqueeze(0), 'cross_attention_states': cross_states}
+                                  ).unsqueeze(0),
+                                  "past_key_values": past_key_values, "output_hidden_states": True,
+                                  "use_cache": True,
+                                  "cache_position": torch.arange(
+                                        next_compute_range[0], next_compute_range[1],
+                                        device=input_ids.device
+                                        ).unsqueeze(0),
+                                  'cross_attention_states': cross_states}
                 #forward_kwargs["cross_attention_mask"] = cross_attn_mask[:, next_compute_range[0]:next_compute_range[1], :, :]
 
                 # always pass the image and cross attention
@@ -272,6 +276,8 @@ class Coconut(nn.Module):
                                     device=input_ids.device
                                 ).unsqueeze(0), "output_hidden_states": True, 'cross_attention_states': cross_states}
         if kv_cache:
+          print(f'\n<<<using cache final forward pass>>>>\n')
+
           legacy_kv_cache = kv_cache.to_legacy_cache()
           past_key_values = [
               (
