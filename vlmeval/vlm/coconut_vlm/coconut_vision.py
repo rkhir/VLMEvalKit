@@ -206,7 +206,10 @@ class CoconutVision(BaseModel):
             ]}
         ]
         # Process inputs
+        print('messages >>>', messages)
+
         input_text = self.processor.apply_chat_template(messages, add_generation_prompt=True)
+        print('input_text >>>', input_text)
         inputs = self.processor(image, input_text, return_tensors='pt').to(self.device)
         # Set max tokens based on dataset
         if not self.use_custom_prompt(dataset):
@@ -243,7 +246,6 @@ class CoconutVision(BaseModel):
 
         with torch.no_grad():
             outputs = self.model.generate(**inputs, **self.kwargs)
-            self.kwargs['max_new_tokens']=300
 
         generated_text = self.processor.tokenizer.decode(
             outputs[0][inputs['input_ids'].shape[1]:],
