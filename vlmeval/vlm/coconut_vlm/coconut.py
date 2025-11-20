@@ -83,11 +83,9 @@ class Coconut(nn.Module):
 
 
         latent_lists = []
-        print('input shape >>>>>', input_ids.shape)
         for i in range(input_ids.shape[0]):
             lst = []
             for idx in latent_indices:
-                print('latent_indices idx', idx)
                 if idx[0] == i:
                     lst.append(idx[1].item())
             latent_lists.append(lst)
@@ -140,7 +138,6 @@ class Coconut(nn.Module):
 
         kv_cache = None
         for pass_idx in range(max_n_latents):
-            print(pass_idx)
             if kv_cache is None:
 
                 forward_kwargs = {
@@ -175,7 +172,6 @@ class Coconut(nn.Module):
 
                 hidden_states_offset = next_compute_range[0]
             else:
-                print(f'\n<<<using cache while thinking>>>>\n')
                 # extract kv cache to reuse
                 legacy_kv_cache = kv_cache.to_legacy_cache()
                 past_key_values = [
@@ -276,7 +272,6 @@ class Coconut(nn.Module):
                                     device=input_ids.device
                                 ).unsqueeze(0), "output_hidden_states": True, 'cross_attention_states': cross_states}
         if kv_cache:
-          print(f'\n<<<using cache final forward pass>>>>\n')
 
           legacy_kv_cache = kv_cache.to_legacy_cache()
           past_key_values = [

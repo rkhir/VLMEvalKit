@@ -111,7 +111,7 @@ class CoconutVision(BaseModel):
         # Generation kwargs
         kwargs_default = dict(do_sample=False, max_new_tokens=2048, temperature=0.0, top_p=None)
         kwargs.update(kwargs_default)
-        print(f'Coconut Vision - Following kwargs received: {kwargs}, will use as generation config.')
+        print(f'\nCoconut Vision - Following kwargs received: {kwargs}, will use as generation config.\n')
         self.kwargs = kwargs
 
 
@@ -206,10 +206,8 @@ class CoconutVision(BaseModel):
             ]}
         ]
         # Process inputs
-        print('messages >>>', messages)
 
         input_text = self.processor.apply_chat_template(messages, add_generation_prompt=True)
-        print('input_text >>>', input_text)
         inputs = self.processor(image, input_text, return_tensors='pt').to(self.device)
         # Set max tokens based on dataset
         if not self.use_custom_prompt(dataset):
