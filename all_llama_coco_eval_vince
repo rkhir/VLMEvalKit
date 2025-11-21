@@ -1,0 +1,284 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Standalone script to run Coconut model evaluations separately.
+Each model evaluation can be run independently using command-line arguments.
+"""
+
+import os
+import sys
+import subprocess
+import argparse
+from pathlib import Path
+
+
+# Model configurations
+MODELS = {
+    's0': {
+        'name': 'coconut-latte-s0',
+        'description': 'Zero thoughts, base model'
+    },
+    't1': {
+        'name': 'coconut-latte-t1',
+        'description': 'One thought, Coco Model'
+    },
+    't2': {
+        'name': 'coconut-latte-t2',
+        'description': 'Two thoughts, Coco Model'
+    },
+    't3': {
+        'name': 'coconut-latte-t3',
+        'description': 'Three thoughts, Coco Model'
+    },
+    't4': {
+        'name': 'coconut-latte-t4',
+        'description': 'Four thoughts, Coco Model'
+    },
+    't5': {
+        'name': 'coconut-latte-t5',
+        'description': 'Five thoughts, Coco Model'
+    }
+}
+
+# Default datasets
+DEFAULT_DATASETS = ['MMStar', 'MMBench', 'MMVet', 'MathVista', 'AI2D', 'Hallusion']
+
+
+def setup_environment():
+    """Setup environment variables and .env file if needed."""
+    # Set CUDA environment variables
+    os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+    
+    # Check if .env file exists, if not, try to create from environment variables
+    env_path = Path(".env")
+    if not env_path.exists():
+        openai_key = os.environ.get('OPENAI_API_KEY')
+        hf_token = os.environ.get('HUGGINGFACE_TOKEN') or os.environ.get('HF_TOKEN')
+        
+        if openai_key or hf_token:
+            env_content = []
+            if openai_key:
+                env_content.append(f"OPENAI_API_KEY={openai_key}")
+            if hf_token:
+                env_content.append(f"HUGGINGFACE_TOKEN={hf_token}")
+            
+            if env_content:
+                env_path.write_text("\n".join(env_content) + "\n")
+                print(f"Created .env file with available tokens")
+        else:
+            print("Warning: No API keys found in environment variables.")
+            print("Please set OPENAI_API_KEY and/or HUGGINGFACE_TOKEN environment variables,")
+            print("or create a .env file manually.")
+
+
+def check_vlmevalkit_installed():
+    """Check if VLMEvalKit is installed and accessible."""
+    try:
+        from vlmeval.config import supported_VLM
+        print(f'\nAll Supported Models:')
+        coconut_models = [k for k in supported_VLM.keys() if 'coconut' in k.lower()]
+        if coconut_models:
+            print(f'  Found {len(coconut_models)} Coconut models: {coconut_models}')
+        else:
+            print('  No Coconut models found in supported_VLM')
+        return True
+    except ImportError:
+        print("Warning: VLMEvalKit not found. Make sure it's installed:")
+        print("  pip install -e . (from VLMEvalKit directory)")
+        return False
+
+
+def run_evaluation(model_key, datasets=None, judge='gpt-4-0125', judge_args=None, run_script='run.py'):
+    """
+    Run evaluation for a specific model.
+    
+    Args:
+        model_key: Key from MODELS dict (e.g., 's0', 't1', etc.)
+        datasets: List of datasets to evaluate on (default: DEFAULT_DATASETS)
+        judge: Judge model to use (default: 'gpt-4-0125')
+        judge_args: Judge arguments as dict (default: {'temperature': 0})
+        run_script: Path to run.py script (default: 'run.py')
+    """
+    if model_key not in MODELS:
+        print(f"Error: Unknown model key '{model_key}'")
+        print(f"Available models: {', '.join(MODELS.keys())}")
+        return False
+    
+    model_info = MODELS[model_key]
+    model_name = model_info['name']
+    description = model_info['description']
+    
+    if datasets is None:
+        datasets = DEFAULT_DATASETS
+    
+    if judge_args is None:
+        judge_args = {'temperature': 0}
+    
+    print(f'\n{"="*60}')
+    print(f'{description}')
+    print(f'Model: {model_name}')
+    print(f'Datasets: {", ".join(datasets)}')
+    print(f'Judge: {judge}')
+    print(f'{"="*60}\n')
+    
+    # Build command
+    cmd = [
+        sys.executable, run_script,
+        '--model', model_name,
+        '--data'] + datasets + [
+        '--mode', 'all',
+        '--judge', judge,
+        '--judge-args', str(judge_args).replace("'", '"')
+    ]
+    
+    print(f"Running command: {' '.join(cmd)}\n")
+    
+    try:
+        result = subprocess.run(cmd, check=True)
+        print(f"\n✓ Evaluation completed successfully for {model_name}")
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"\n✗ Evaluation failed for {model_name} with exit code {e.returncode}")
+        return False
+    except FileNotFoundError:
+        print(f"\n✗ Error: Could not find {run_script}")
+        print(f"Make sure VLMEvalKit is set up and {run_script} is in the current directory or PATH")
+        return False
+
+
+def list_models():
+    """List all available models."""
+    print("\nAvailable models:")
+    print("-" * 60)
+    for key, info in MODELS.items():
+        print(f"  {key:3s} - {info['name']:20s} ({info['description']})")
+    print("-" * 60)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Run Coconut model evaluations separately',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=f"""
+Examples:
+  # Run zero thoughts model (s0)
+  python {sys.argv[0]} --model s0
+  
+  # Run one thought model (t1) on specific datasets
+  python {sys.argv[0]} --model t1 --datasets MMStar MMBench
+  
+  # Run all models sequentially
+  python {sys.argv[0]} --all
+  
+  # List available models
+  python {sys.argv[0]} --list
+        """
+    )
+    
+    parser.add_argument(
+        '--model', '-m',
+        choices=list(MODELS.keys()),
+        help='Model to evaluate (s0, t1, t2, t3, t4, or t5)'
+    )
+    
+    parser.add_argument(
+        '--all', '-a',
+        action='store_true',
+        help='Run all model evaluations sequentially'
+    )
+    
+    parser.add_argument(
+        '--list', '-l',
+        action='store_true',
+        help='List all available models and exit'
+    )
+    
+    parser.add_argument(
+        '--datasets', '-d',
+        nargs='+',
+        default=DEFAULT_DATASETS,
+        help=f'Datasets to evaluate on (default: {" ".join(DEFAULT_DATASETS)})'
+    )
+    
+    parser.add_argument(
+        '--judge', '-j',
+        default='gpt-4-0125',
+        help='Judge model to use (default: gpt-4-0125)'
+    )
+    
+    parser.add_argument(
+        '--judge-args',
+        default='{"temperature":0}',
+        help='Judge arguments as JSON string (default: \'{"temperature":0}\')'
+    )
+    
+    parser.add_argument(
+        '--run-script',
+        default='run.py',
+        help='Path to VLMEvalKit run.py script (default: run.py)'
+    )
+    
+    parser.add_argument(
+        '--skip-env-check',
+        action='store_true',
+        help='Skip environment and VLMEvalKit checks'
+    )
+    
+    args = parser.parse_args()
+    
+    # List models and exit
+    if args.list:
+        list_models()
+        return
+    
+    # Setup environment
+    if not args.skip_env_check:
+        setup_environment()
+        check_vlmevalkit_installed()
+    
+    # Parse judge args
+    import json
+    try:
+        judge_args = json.loads(args.judge_args)
+    except json.JSONDecodeError:
+        print(f"Warning: Invalid JSON for --judge-args, using default")
+        judge_args = {'temperature': 0}
+    
+    # Run evaluations
+    if args.all:
+        print("\nRunning all model evaluations sequentially...\n")
+        results = {}
+        for model_key in MODELS.keys():
+            success = run_evaluation(
+                model_key,
+                datasets=args.datasets,
+                judge=args.judge,
+                judge_args=judge_args,
+                run_script=args.run_script
+            )
+            results[model_key] = success
+        
+        # Summary
+        print("\n" + "="*60)
+        print("Evaluation Summary:")
+        print("="*60)
+        for model_key, success in results.items():
+            status = "✓ PASSED" if success else "✗ FAILED"
+            print(f"  {MODELS[model_key]['name']:25s} - {status}")
+        print("="*60)
+        
+    elif args.model:
+        run_evaluation(
+            args.model,
+            datasets=args.datasets,
+            judge=args.judge,
+            judge_args=judge_args,
+            run_script=args.run_script
+        )
+    else:
+        parser.print_help()
+        print("\nError: Please specify --model, --all, or --list")
+
+
+if __name__ == "__main__":
+    main()
