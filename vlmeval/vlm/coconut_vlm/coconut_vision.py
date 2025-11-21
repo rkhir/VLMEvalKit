@@ -243,7 +243,10 @@ class CoconutVision(BaseModel):
             generate_kwargs['aspect_ratio_mask'][:, :, 0] = 1  # Enable first tile for all images
 
         with torch.no_grad():
-            outputs = self.model.generate(**inputs, **self.kwargs)
+            if self.scheduled_stage:
+                outputs = self.base_model.generate(**inputs, **self.kwargs)
+            else:
+                outputs = self.model.generate(**inputs, **self.kwargs)
 
         generated_text = self.processor.tokenizer.decode(
             outputs[0][inputs['input_ids'].shape[1]:],
