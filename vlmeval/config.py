@@ -1577,7 +1577,7 @@ coconut_series = {
     "coconut-latte": partial(
         CoconutVision, model_path="meta-llama/Llama-3.2-11B-Vision-Instruct"
     ),
-    'coconut-latte-s0': partial(CoconutVision, model_path="meta-llama/Llama-3.2-11B-Vision-Instruct", scheduled_stage=0, c_thought=2),
+    'coconut-latte-s0': partial(CoconutVision, model_path="meta-llama/Llama-3.2-11B-Vision-Instruct", scheduled_stage=0, c_thought=0),
     'coconut-latte-s1': partial(CoconutVision, model_path="meta-llama/Llama-3.2-11B-Vision-Instruct", scheduled_stage=1, c_thought=2),
     'coconut-latte-s2': partial(CoconutVision, model_path="meta-llama/Llama-3.2-11B-Vision-Instruct", scheduled_stage=2, c_thought=2),
     'coconut-latte-s3': partial(CoconutVision, model_path="meta-llama/Llama-3.2-11B-Vision-Instruct",  scheduled_stage=3, c_thought=2),

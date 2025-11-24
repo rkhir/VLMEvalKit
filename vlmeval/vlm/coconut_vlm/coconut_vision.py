@@ -135,7 +135,10 @@ class CoconutVision(BaseModel):
         }
 
         k = min(self.max_latent_stage, self.scheduled_stage) * self.c_thought
-        latent_tokens = f"<|start-latent|>" + "<|latent|>" * k + "<|end-latent|>"
+        if k == 0:
+            latent_tokens =  ''
+        else:
+            latent_tokens = f"<|start-latent|>" + "<|latent|>" * k + "<|end-latent|>"
 
         if listinstr(['AI2D'], dataset):
             self.kwargs['max_new_tokens'] = 2048
@@ -244,9 +247,10 @@ class CoconutVision(BaseModel):
 
         with torch.no_grad():
             if self.scheduled_stage:
-                outputs = self.base_model.generate(**inputs, **self.kwargs)
-            else:
                 outputs = self.model.generate(**inputs, **self.kwargs)
+            else:
+                print(f'\n inputs.keys >>>> {inputs.keys()} \n  self kwargs >>> {self.kwargs}\n')
+                outputs = self.base_model.generate(**inputs, **self.kwargs)
 
         generated_text = self.processor.tokenizer.decode(
             outputs[0][inputs['input_ids'].shape[1]:],
