@@ -249,7 +249,7 @@ class CoconutVision(BaseModel):
             if self.scheduled_stage:
                 outputs = self.model.generate(**inputs, **self.kwargs)
             else:
-                print(f'\n inputs.keys >>>> {inputs.keys()} \n  self kwargs >>> {self.kwargs}\n')
+                print(f'\n inputs.keys >>>> {inputs.keys()} \n  self kwargs >>> {self.kwargs.keys()}\n')
                 outputs = self.base_model.generate(**inputs, **self.kwargs)
 
         generated_text = self.processor.tokenizer.decode(
