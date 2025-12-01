@@ -71,29 +71,24 @@ class CoconutVision(BaseModel):
             self.processor.tokenizer.pad_token = self.processor.tokenizer.eos_token
 
         # Add Coconut special tokens
-        special_tokens = ["<|start-latent|>", "<|end-latent|>", "<|latent|>"]
+        special_tokens = ["<|latent|>"]
         self.processor.tokenizer.add_tokens(special_tokens)
 
         self.latent_id = self.processor.tokenizer.convert_tokens_to_ids("<|latent|>")
-        self.start_id = self.processor.tokenizer.convert_tokens_to_ids("<|start-latent|>")
-        self.end_id = self.processor.tokenizer.convert_tokens_to_ids("<|end-latent|>")
 
         self.base_model.resize_token_embeddings(len(self.processor.tokenizer))
         # initialize the new token embeddings with a known token
         # it helps stablize the training
         embeddings = self.base_model.get_input_embeddings()
         target_id = self.processor.tokenizer.convert_tokens_to_ids("<<")
-        for token_id in [self.latent_id, self.start_id, self.end_id]:
-            with torch.no_grad():
-                embeddings.weight.data[token_id] = embeddings.weight.data[target_id]
+        with torch.no_grad():
+            embeddings.weight.data[self.latent_id] = embeddings.weight.data[target_id]
 
         # Wrap with Coconut
         self.model = Coconut(
            self.base_model,
            self.processor,
            self.latent_id,
-           self.start_id,
-           self.end_id,
            self.processor.tokenizer.eos_token_id
         )
         self.model.eval()
@@ -138,7 +133,7 @@ class CoconutVision(BaseModel):
         if k == 0:
             latent_tokens =  ''
         else:
-            latent_tokens = f"<|start-latent|>" + "<|latent|>" * k + "<|end-latent|>"
+            latent_tokens = "<|latent|>" * k
 
         if listinstr(['AI2D'], dataset):
             self.kwargs['max_new_tokens'] = 2048
@@ -249,7 +244,6 @@ class CoconutVision(BaseModel):
             if self.scheduled_stage:
                 outputs = self.model.generate(**inputs, **self.kwargs)
             else:
-                print(f'\n inputs.keys >>>> {inputs.keys()} \n  self kwargs >>> {self.kwargs.keys()}\n')
                 outputs = self.base_model.generate(**inputs, **self.kwargs)
 
         generated_text = self.processor.tokenizer.decode(

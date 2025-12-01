@@ -54,8 +54,6 @@ class Coconut(nn.Module):
         base_causallm,
         processor,
         latent_token_id,
-        start_latent_id,
-        end_latent_id,
         eos_token_id,
     ):
 
@@ -64,8 +62,6 @@ class Coconut(nn.Module):
         self.base_causallm = base_causallm
         self.latent_token_id = latent_token_id
         self.eos_token_id = eos_token_id
-        self.start_latent_id = start_latent_id
-        self.end_latent_id = end_latent_id
         self.processor = processor
         self.base_causallm.config.use_cache = True
         #self._kv_cache = DynamicCache()
