@@ -1,20 +1,12 @@
 import torch
-from PIL import Image
-import os.path as osp
-import sys
+
 from vlmeval.vlm.base import BaseModel
 from vlmeval.smp import *
 from vlmeval.dataset import DATASET_TYPE
-import re
-import numpy as np
-import torch.nn.functional as F
-import uuid
-import copy
-import json
-from transformers import StoppingCriteria, StoppingCriteriaList
+from transformers import StoppingCriteria
 
 
-from vlmeval.vlm.coconut_vlm.coconut import Coconut
+from vlmeval.vlm.coconut_vlm.vlmcoconut import VLMCoconut
 
 
 class StopOnStrings(StoppingCriteria):
@@ -48,8 +40,6 @@ class CoconutVision(BaseModel):
     def __init__(self,
                  model_path='meta-llama/Llama-3.2-11B-Vision-Instruct',
                  c_thought=2,
-                 scheduled_stage=2,
-                 max_latent_stage=3,
                  **kwargs):
         try:
             from transformers import MllamaForConditionalGeneration, AutoProcessor
@@ -78,14 +68,14 @@ class CoconutVision(BaseModel):
 
         self.base_model.resize_token_embeddings(len(self.processor.tokenizer))
         # initialize the new token embeddings with a known token
-        # it helps stablize the training
+        # it helps stabilize the training
         embeddings = self.base_model.get_input_embeddings()
         target_id = self.processor.tokenizer.convert_tokens_to_ids("<<")
         with torch.no_grad():
             embeddings.weight.data[self.latent_id] = embeddings.weight.data[target_id]
 
         # Wrap with Coconut
-        self.model = Coconut(
+        self.model = VLMCoconut(
            self.base_model,
            self.processor,
            self.latent_id,
@@ -100,9 +90,6 @@ class CoconutVision(BaseModel):
         self.kwargs = kwargs
 
         self.c_thought = c_thought
-        self.scheduled_stage = scheduled_stage
-        self.max_latent_stage = max_latent_stage
-
         # Generation kwargs
         kwargs_default = dict(do_sample=False, max_new_tokens=2048, temperature=0.0, top_p=None)
         kwargs.update(kwargs_default)
@@ -129,11 +116,10 @@ class CoconutVision(BaseModel):
             if cand in line and not pd.isna(line[cand])
         }
 
-        k = min(self.max_latent_stage, self.scheduled_stage) * self.c_thought
-        if k == 0:
+        if self.c_thought == 0:
             latent_tokens =  ''
         else:
-            latent_tokens = "<|latent|>" * k
+            latent_tokens = "<|latent|>" * self.c_thought
 
         if listinstr(['AI2D'], dataset):
             self.kwargs['max_new_tokens'] = 2048
@@ -241,17 +227,17 @@ class CoconutVision(BaseModel):
             generate_kwargs['aspect_ratio_mask'][:, :, 0] = 1  # Enable first tile for all images
 
         with torch.no_grad():
-            if self.scheduled_stage:
+            if self.c_thought:
                 outputs = self.model.generate(**inputs, **self.kwargs)
-            else:
-                outputs = self.base_model.generate(**inputs, **self.kwargs)
 
-        generated_text = self.processor.tokenizer.decode(
-            outputs[0][inputs['input_ids'].shape[1]:],
-            skip_special_tokens=True
-        ).strip()
 
-        return generated_text
+            generated_text = self.processor.tokenizer.decode(
+                outputs[0][inputs['input_ids'].shape[1]:],
+                skip_special_tokens=True
+            ).strip()
+
+            return generated_text
+        return 'Coconut-VLM needs at least one thought to work.'
 
     def chat_inner(self, message, dataset=None):
         """Chat interface - delegates to generate_inner"""

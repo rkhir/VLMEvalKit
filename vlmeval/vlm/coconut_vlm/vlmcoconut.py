@@ -47,7 +47,7 @@ def _compute_cross_attention_states(base_causallm, pixel_values, aspect_ratio_ma
 
         return feats
 
-class Coconut(nn.Module):
+class VLMCoconut(nn.Module):
 
     def __init__(
         self,
@@ -57,14 +57,13 @@ class Coconut(nn.Module):
         eos_token_id,
     ):
 
-        super(Coconut, self).__init__()
+        super(VLMCoconut, self).__init__()
         self.gen_forward_cnt = 0
         self.base_causallm = base_causallm
         self.latent_token_id = latent_token_id
         self.eos_token_id = eos_token_id
         self.processor = processor
         self.base_causallm.config.use_cache = True
-        #self._kv_cache = DynamicCache()
 
         self.embedding = self.base_causallm.get_input_embeddings()
 
@@ -123,7 +122,6 @@ class Coconut(nn.Module):
         if 'pixel_values' in kwargs and kwargs['pixel_values'] is not None:
             vision_kwargs['pixel_values'] = kwargs['pixel_values']
             cross_states = _compute_cross_attention_states(self.base_causallm,kwargs['pixel_values'],kwargs.get('aspect_ratio_mask'),kwargs.get('aspect_ratio_ids'))
-            #vision_kwargs["cross_attention_states"] = cross_states  # [B, I, T, C]
 
         vision_kwargs["cross_attention_mask"] = kwargs.get('cross_attention_mask') #cross_attn_mask
         if 'aspect_ratio_ids' in kwargs and kwargs['aspect_ratio_ids'] is not None:
@@ -144,7 +142,6 @@ class Coconut(nn.Module):
                 "return_dict": True,
                 "past_key_values":   DynamicCache(),
                 "pixel_values": vision_kwargs["pixel_values"],
-                #"cross_attention_mask": vision_kwargs['cross_attention_mask'][:, next_compute_range[0]:next_compute_range[1], :, :],
                 "aspect_ratio_mask": vision_kwargs['aspect_ratio_mask'],
                 "aspect_ratio_ids": vision_kwargs['aspect_ratio_ids'],
                 "cache_position": torch.arange(
@@ -194,9 +191,8 @@ class Coconut(nn.Module):
                                         device=input_ids.device
                                         ).unsqueeze(0),
                                   'cross_attention_states': cross_states}
-                #forward_kwargs["cross_attention_mask"] = cross_attn_mask[:, next_compute_range[0]:next_compute_range[1], :, :]
 
-                # always pass the image and cross attention
+                # always pass the image and cross-attention
                 outputs = self.base_causallm(**forward_kwargs)
                 hidden_states_offset = next_compute_range[0]
             ###############
@@ -290,8 +286,6 @@ class Coconut(nn.Module):
 
         return Outputs(loss=loss, inputs_embeds=inputs_embeds, logits=logits, past_key_values=past_key_values)
 
-    #def train(self):
-    #    self.base_causallm.train()
 
     def eval(self):
         self.base_causallm.eval()
@@ -367,7 +361,7 @@ class Coconut(nn.Module):
           pad = last.expand(bsz, repeat, I, T)
           return torch.cat([_cam, pad], dim=1)
 
-      # 3) Autoregressive loop: full-prefix forward each step (simple & correct)
+      # 3) Autoregressive loop: full-prefix forward each step
       for _ in range(max_new_tokens - 1):
           curr_len = inputs_embeds.shape[1]
 
