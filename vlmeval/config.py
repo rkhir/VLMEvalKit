@@ -1574,18 +1574,26 @@ llama_series = {
 }
 
 coconut_series = {
-    "coconut-latte": partial(
+    # LLaMA Vision Coconut models (cross-attention architecture)
+    "coconut-llama": partial(
         CoconutVision, model_path="meta-llama/Llama-3.2-11B-Vision-Instruct"
     ),
+    'coconut-llama-t1': partial(CoconutVision, model_path="meta-llama/Llama-3.2-11B-Vision-Instruct", c_thought=1),
+    'coconut-llama-t2': partial(CoconutVision, model_path="meta-llama/Llama-3.2-11B-Vision-Instruct", c_thought=2),
+    'coconut-llama-t3': partial(CoconutVision, model_path="meta-llama/Llama-3.2-11B-Vision-Instruct", c_thought=3),
+    'coconut-llama-t4': partial(CoconutVision, model_path="meta-llama/Llama-3.2-11B-Vision-Instruct", c_thought=4),
+    'coconut-llama-t5': partial(CoconutVision, model_path="meta-llama/Llama-3.2-11B-Vision-Instruct", c_thought=5),
 
-
-    'coconut-latte-t1': partial(CoconutVision, model_path="meta-llama/Llama-3.2-11B-Vision-Instruct",  c_thought=1),
-    'coconut-latte-t2': partial(CoconutVision, model_path="meta-llama/Llama-3.2-11B-Vision-Instruct", c_thought=2),
-
-    'coconut-latte-t3': partial(CoconutVision, model_path="meta-llama/Llama-3.2-11B-Vision-Instruct", c_thought=3),
-    'coconut-latte-t4': partial(CoconutVision, model_path="meta-llama/Llama-3.2-11B-Vision-Instruct", c_thought=4),
-    'coconut-latte-t5': partial(CoconutVision, model_path="meta-llama/Llama-3.2-11B-Vision-Instruct",c_thought=5),
-
+    # Qwen 2.5 VL Coconut models (merged embedding architecture)
+    "coconut-qwen": partial(
+        CoconutQwenVision, model_path="Qwen/Qwen2.5-VL-3B-Instruct"
+    ),
+    'coconut-qwen-t0': partial(CoconutQwenVision, model_path="Qwen/Qwen2.5-VL-7B-Instruct", c_thought=0),
+    'coconut-qwen-t1': partial(CoconutQwenVision, model_path="Qwen/Qwen2.5-VL-7B-Instruct", c_thought=1),
+    'coconut-qwen-t2': partial(CoconutQwenVision, model_path="Qwen/Qwen2.5-VL-7B-Instruct", c_thought=2),
+    'coconut-qwen-t3': partial(CoconutQwenVision, model_path="Qwen/Qwen2.5-VL-7B-Instruct", c_thought=3),
+    'coconut-qwen-t4': partial(CoconutQwenVision, model_path="Qwen/Qwen2.5-VL-7B-Instruct", c_thought=4),
+    'coconut-qwen-t5': partial(CoconutQwenVision, model_path="Qwen/Qwen2.5-VL-7B-Instruct", c_thought=5),
 }
 
 molmo_series = {

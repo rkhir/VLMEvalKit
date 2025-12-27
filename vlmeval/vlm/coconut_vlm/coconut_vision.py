@@ -229,14 +229,12 @@ class CoconutVision(BaseModel):
         with torch.no_grad():
             if self.c_thought:
                 outputs = self.model.generate(**inputs, **self.kwargs)
+                generated_text = self.processor.tokenizer.decode(
+                    outputs[0][inputs['input_ids'].shape[1]:],
+                    skip_special_tokens=True
+                ).strip()
 
-
-            generated_text = self.processor.tokenizer.decode(
-                outputs[0][inputs['input_ids'].shape[1]:],
-                skip_special_tokens=True
-            ).strip()
-
-            return generated_text
+                return generated_text
         return 'Coconut-VLM needs at least one thought to work.'
 
     def chat_inner(self, message, dataset=None):
