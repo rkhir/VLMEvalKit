@@ -221,8 +221,10 @@ class CoconutQwenVision(BaseModel):
         raise ValueError(f'Invalid image: {image}')
 
     def _prepare_content(self, inputs, dataset=None):
-        """Prepare content for Qwen2.5 VL format."""
         content = []
+        last_text_idx = None
+        has_latent = any('<|latent|>' in s['value'] for s in inputs if s['type'] == 'text')
+        
         for s in inputs:
             if s['type'] == 'image':
                 item = {'type': 'image', 'image': self._ensure_image_url(s['value'])}
@@ -230,12 +232,17 @@ class CoconutQwenVision(BaseModel):
                     item['min_pixels'] = self.min_pixels
                 if self.max_pixels is not None:
                     item['max_pixels'] = self.max_pixels
+                content.append(item)
             elif s['type'] == 'text':
-
                 item = {'type': 'text', 'text': s['value']}
-            else:
-                continue
-            content.append(item)
+                content.append(item)
+                last_text_idx = len(content) - 1
+        
+        # Add latent tokens to the LAST text segment only (if not already present)
+        if self.c_thought > 0 and not has_latent and last_text_idx is not None:
+            latent_tokens = "<|latent|>" * self.c_thought
+            content[last_text_idx]['text'] += latent_tokens
+        
         return content
 
     def generate_inner(self, message, dataset=None):
