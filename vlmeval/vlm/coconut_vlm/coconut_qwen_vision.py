@@ -180,8 +180,9 @@ class CoconutQwenVision(BaseModel):
                 f'Read the text in the image carefully and answer the question. '
                 f'For yes/no questions, just respond Yes or No. '
                 f'If numeric, respond with the number only.\n'
-                f'{latent_tokens}\n'
                 f'Question: {question}'
+                f'{latent_tokens}\n'
+
             )
         elif listinstr(['MMVet'], dataset):
             self.kwargs['max_new_tokens'] = 1024
@@ -195,8 +196,8 @@ class CoconutQwenVision(BaseModel):
             self.kwargs['max_new_tokens'] = 512
             prompt = (
                 f'Read the text in the image carefully.\n'
-                f'{latent_tokens}\n'
                 f'Question: {question}'
+                f'{latent_tokens}\n'
             )
         else:
             # Default case

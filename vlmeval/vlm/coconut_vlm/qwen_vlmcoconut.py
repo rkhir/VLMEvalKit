@@ -5,9 +5,15 @@ Unlike LLaMA Vision which uses cross-attention for vision-language fusion,
 Qwen2.5 VL uses merged embeddings where visual tokens are embedded directly
 into the input sequence.
 
-IMPORTANT: We must compute vision-merged embeddings upfront and use them
-consistently throughout all Coconut passes. Using text-only embeddings
-after a vision-aware first pass causes embedding mismatches.
+Key Architecture Difference:
+- LLaMA Vision: Uses cross-attention states (can be reused across passes)
+- Qwen2.5 VL: Vision tokens are INLINE in the sequence (preserved in KV cache)
+
+Strategy:
+1. First pass: Use input_ids + pixel_values + image_grid_thw (let Qwen handle vision merging)
+2. Extract vision-merged embeddings from the first pass hidden states
+3. Subsequent passes: Use inputs_embeds with updated latent token embeddings
+   (Vision tokens are preserved in the KV cache from the first pass)
 """
 
 import torch
@@ -24,7 +30,8 @@ class QwenVLMCoconut(nn.Module):
     Coconut wrapper for Qwen2.5 VL models.
     
     Key insight: Qwen merges vision embeddings into the sequence internally.
-    We must replicate this to have consistent embeddings across all Coconut passes.
+    We use input_ids + pixel_values in the first pass, then cache the 
+    vision-merged embeddings for subsequent passes.
     """
 
     def __init__(
@@ -43,64 +50,15 @@ class QwenVLMCoconut(nn.Module):
         self.base_causallm.config.use_cache = True
 
         self.embedding = self.base_causallm.get_input_embeddings()
-        # Get image token ID for vision embedding replacement
-        if hasattr(self.base_causallm.config, 'image_token_id'):
-            self.image_token_id = self.base_causallm.config.image_token_id
-        else:
-            self.image_token_id = self.processor.tokenizer.convert_tokens_to_ids('<|image_pad|>')
-    
-
-    def _get_vision_merged_embeddings(self, input_ids, pixel_values, image_grid_thw):
-        """
-        Compute embeddings with vision tokens properly merged.
-        
-        This replicates what Qwen does internally so we have consistent
-        embeddings across all Coconut passes.
-        """
-        # Get text embeddings
-        inputs_embeds = self.embedding(input_ids)
-        
-        if pixel_values is None:
-            return inputs_embeds
-            
-        # Get vision embeddings from the visual encoder
-        # Qwen2.5 VL uses self.base_causallm.visual for vision encoding
-        if hasattr(self.base_causallm, 'visual'):
-            with torch.no_grad():
-                # The visual module expects pixel_values and grid_thw
-                image_embeds = self.base_causallm.visual(
-                    pixel_values, 
-                    grid_thw=image_grid_thw
-                )
-        else:
-            # Fallback: return text-only embeddings
-            print("[WARNING] No visual module found, using text-only embeddings")
-            return inputs_embeds
-        
-        # Find image token positions and replace with vision embeddings
-        # Only support batch_size=1 for now
-        assert input_ids.shape[0] == 1, "Only batch_size=1 is supported"
-        
-        # Find positions of image pad tokens
-        image_mask = (input_ids[0] == self.image_token_id)
-        image_positions = image_mask.nonzero(as_tuple=True)[0]
-        
-        if len(image_positions) > 0:
-            # Flatten vision embeddings to [num_tokens, hidden_dim]
-            vision_embeds = image_embeds.view(-1, image_embeds.shape[-1])
-            
-            num_vision_tokens = min(len(image_positions), vision_embeds.shape[0])
-            
-            # Replace image pad tokens with vision embeddings
-            inputs_embeds[0, image_positions[:num_vision_tokens]] = vision_embeds[:num_vision_tokens]
-        
-        return inputs_embeds
 
     def forward(self, **kwargs):
         """
         Forward pass with Coconut continuous thought mechanism.
         
-        Uses vision-merged embeddings consistently across all passes.
+        Strategy (mirroring vlmcoconut.py):
+        1. First pass: Use input_ids + pixel_values (let Qwen handle vision merging internally)
+        2. Extract vision-merged embeddings from hidden states
+        3. Subsequent passes: Use inputs_embeds with updated latent token embeddings
         """
         input_ids = kwargs['input_ids']
         attention_mask = kwargs.get('attention_mask')
@@ -121,36 +79,33 @@ class QwenVLMCoconut(nn.Module):
             latent_lists.append(lst)
 
         max_n_latents = max([len(l) for l in latent_lists])
-
         
-        # Get vision-merged embeddings upfront - this is crucial!
-        inputs_embeds = self._get_vision_merged_embeddings(input_ids, pixel_values, image_grid_thw)
+        # Compute the range for the first forward pass
+        # This should go from 0 to the first latent token (excluding latent tokens)
+        if max_n_latents > 0:
+            first_latent_pos = latent_indices[:, 1].min().item()
+            next_compute_range = (0, first_latent_pos)
+        else:
+            # No latent tokens - process the full sequence
+            next_compute_range = (0, input_ids.shape[1])
 
-        if max_n_latents == 0:
-            # No latent tokens - just do regular forward pass
-            forward_kwargs = {
-                "inputs_embeds": inputs_embeds,
-                "attention_mask": attention_mask,
-                "output_hidden_states": True,
-                "return_dict": True,
-            }
-            outputs = self.base_causallm(**forward_kwargs)
-            return Outputs(loss=None, inputs_embeds=inputs_embeds, logits=outputs.logits, past_key_values=None)
-
-        # First compute range is up to the first latent token
-        next_compute_range = (0, latent_indices[:, 1].min().item())
+        # We'll store the vision-merged embeddings after first pass
+        inputs_embeds = None
 
         kv_cache = None
         for pass_idx in range(max_n_latents):
             if kv_cache is None:
-                # First pass - use inputs_embeds (with vision already merged!)
+                # First pass - use input_ids + pixel_values (like vlmcoconut.py)
+                # This lets Qwen handle vision merging internally with proper RoPE positions
                 forward_kwargs = {
-                    "inputs_embeds": inputs_embeds[:, next_compute_range[0]:next_compute_range[1], :],
+                    "input_ids": input_ids[:, next_compute_range[0]:next_compute_range[1]],
                     "attention_mask": attention_mask[:, :next_compute_range[1]] if attention_mask is not None else None,
                     "output_hidden_states": True,
                     "use_cache": True,
                     "return_dict": True,
                     "past_key_values": DynamicCache(),
+                    "pixel_values": pixel_values,
+                    "image_grid_thw": image_grid_thw,
                     "cache_position": torch.arange(
                         next_compute_range[0], next_compute_range[1],
                         device=input_ids.device
@@ -160,16 +115,21 @@ class QwenVLMCoconut(nn.Module):
                 # Add position_ids
                 if 'position_ids' in kwargs:
                     forward_kwargs['position_ids'] = kwargs['position_ids'][:, next_compute_range[0]:next_compute_range[1]]
-                else:
-                    forward_kwargs['position_ids'] = torch.arange(
-                        next_compute_range[0],
-                        next_compute_range[1],
-                        dtype=torch.long,
-                        device=input_ids.device
-                    ).unsqueeze(0)
 
                 outputs = self.base_causallm(**forward_kwargs)
                 hidden_states_offset = next_compute_range[0]
+                
+                # Extract vision-merged embeddings from hidden states for subsequent passes
+                # hidden_states[0] contains the input embeddings with vision tokens merged
+                first_pass_embeds = outputs.hidden_states[0]
+                
+                # Build full inputs_embeds by combining first pass embeds with remaining text embeddings
+                # The remaining text embeddings (after next_compute_range[1]) need to be computed
+                if next_compute_range[1] < input_ids.shape[1]:
+                    remaining_text_embeds = self.embedding(input_ids[:, next_compute_range[1]:])
+                    inputs_embeds = torch.cat([first_pass_embeds, remaining_text_embeds], dim=1)
+                else:
+                    inputs_embeds = first_pass_embeds
             else:
                 # Subsequent passes - use inputs_embeds (consistent with first pass)
                 legacy_kv_cache = kv_cache.to_legacy_cache()
@@ -289,6 +249,11 @@ class QwenVLMCoconut(nn.Module):
     def generate(self, **kwargs):
         """
         Generate text with Coconut continuous thought mechanism.
+        
+        Strategy:
+        1. Run Coconut forward pass with input_ids + pixel_values to get latent-filled embeddings
+        2. Use the full inputs_embeds (with vision merged) for autoregressive generation
+        3. For subsequent generation steps, we use inputs_embeds to preserve vision context
         """
         self.gen_forward_cnt = 0
 
@@ -341,10 +306,20 @@ class QwenVLMCoconut(nn.Module):
         )
 
         # Autoregressive generation loop
+        # We use inputs_embeds (with vision merged) for all subsequent steps
+        # This ensures the model can still attend to the vision tokens via their embeddings
+        # We now also pass position_ids to ensure correct M-RoPE computation
         for _ in range(max_new_tokens - 1):
+            # Create position_ids for the current step
+            # We need to pass positions for ALL tokens in inputs_embeds
+            step_position_ids = torch.arange(
+                0, inputs_embeds.shape[1], dtype=torch.long, device=device
+            ).unsqueeze(0)
+            
             step_out = self.base_causallm(
                 inputs_embeds=inputs_embeds,
                 attention_mask=attention_mask,
+                position_ids=step_position_ids,
                 use_cache=False,
                 output_hidden_states=False,
                 return_dict=True,
