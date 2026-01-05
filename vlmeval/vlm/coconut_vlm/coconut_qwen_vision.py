@@ -222,8 +222,10 @@ class CoconutQwenVision(BaseModel):
         raise ValueError(f'Invalid image: {image}')
 
     def _prepare_content(self, inputs, dataset=None):
-        content = []
-        last_text_idx = None
+        # For Qwen2.5-VL with Coconut, images MUST come before text with latent tokens
+        # This ensures the first Coconut pass includes all image tokens
+        images = []
+        texts = []
         has_latent = any('<|latent|>' in s['value'] for s in inputs if s['type'] == 'text')
         
         for s in inputs:
@@ -233,17 +235,18 @@ class CoconutQwenVision(BaseModel):
                     item['min_pixels'] = self.min_pixels
                 if self.max_pixels is not None:
                     item['max_pixels'] = self.max_pixels
-                content.append(item)
+                images.append(item)
             elif s['type'] == 'text':
                 item = {'type': 'text', 'text': s['value']}
-                content.append(item)
-                last_text_idx = len(content) - 1
+                texts.append(item)
+        
+        # Reorder: images first, then texts
+        content = images + texts
         
         # Add latent tokens to the LAST text segment only (if not already present)
-        if self.c_thought > 0 and not has_latent and last_text_idx is not None:
-            print('<<Thoughts Assigned at the end >>')
+        if self.c_thought > 0 and not has_latent and len(texts) > 0:
             latent_tokens = "<|latent|>" * self.c_thought
-            content[last_text_idx]['text'] += latent_tokens
+            content[-1]['text'] += latent_tokens
         
         return content
 
@@ -254,10 +257,19 @@ class CoconutQwenVision(BaseModel):
         
         # Build messages for Qwen format
         messages = [{'role': 'user', 'content': content}]
-        print(f'\n>>>>>> message : {messages} <<<<<<< \n')
+        
+        # DEBUG: Print message structure
+        print(f"\n=== DEBUG coconut_qwen_vision ===")
+        print(f"Dataset: {dataset}")
+        print(f"Messages: {messages}")
+        print(f"Content length: {len(content)}")
+        print(f"Content types: {[c['type'] for c in content]}")
+        
         # Process inputs using qwen_vl_utils
         # Note: process_vision_info expects a list of conversations
         images, videos = self.process_vision_info([messages])
+        print(f"Images extracted: {len(images) if images else 0}")
+        print(f"Videos extracted: {len(videos) if videos else 0}")
         
         # Apply chat template
         # Note: apply_chat_template expects a list of conversations and returns a list
@@ -266,8 +278,9 @@ class CoconutQwenVision(BaseModel):
             tokenize=False, 
             add_generation_prompt=True
         )
+        print(f"Text after template (first 500 chars): {str(text)[:500]}")
+        print(f"=== END DEBUG ===\n")
 
-        print(f'\n>>>>>> {text} <<<<<<< \n')
 
         # Process with processor
         inputs = self.processor(
@@ -279,7 +292,6 @@ class CoconutQwenVision(BaseModel):
         ).to(self.device)
 
 
-        print(f'\n>>>>>> inputs : {inputs} <<<<<<< \n')
         # Set max tokens based on dataset
         if not self.use_custom_prompt(dataset):
             if dataset is not None and (DATASET_TYPE(dataset) == 'MCQ' or DATASET_TYPE(dataset) == 'Y/N'):
