@@ -241,6 +241,7 @@ class CoconutQwenVision(BaseModel):
         
         # Add latent tokens to the LAST text segment only (if not already present)
         if self.c_thought > 0 and not has_latent and last_text_idx is not None:
+            print('<<Thoughts Assigned at the end >>')
             latent_tokens = "<|latent|>" * self.c_thought
             content[last_text_idx]['text'] += latent_tokens
         
@@ -253,26 +254,32 @@ class CoconutQwenVision(BaseModel):
         
         # Build messages for Qwen format
         messages = [{'role': 'user', 'content': content}]
-
+        print(f'\n>>>>>> message : {messages} <<<<<<< \n')
         # Process inputs using qwen_vl_utils
-        images, videos = self.process_vision_info(messages)
+        # Note: process_vision_info expects a list of conversations
+        images, videos = self.process_vision_info([messages])
         
         # Apply chat template
-        input_text = self.processor.apply_chat_template(
-            messages, 
+        # Note: apply_chat_template expects a list of conversations and returns a list
+        text = self.processor.apply_chat_template(
+            [messages], 
             tokenize=False, 
             add_generation_prompt=True
         )
 
+        print(f'\n>>>>>> {text} <<<<<<< \n')
+
         # Process with processor
         inputs = self.processor(
-            text=[input_text],
+            text=text,
             images=images,
             videos=videos,
             padding=True,
             return_tensors='pt'
         ).to(self.device)
 
+
+        print(f'\n>>>>>> inputs : {inputs} <<<<<<< \n')
         # Set max tokens based on dataset
         if not self.use_custom_prompt(dataset):
             if dataset is not None and (DATASET_TYPE(dataset) == 'MCQ' or DATASET_TYPE(dataset) == 'Y/N'):
