@@ -258,28 +258,25 @@ class CoconutQwenVision(BaseModel):
         # Build messages for Qwen format
         messages = [{'role': 'user', 'content': content}]
         
-        # DEBUG: Print message structure
-        print(f"\n=== DEBUG coconut_qwen_vision ===")
-        print(f"Dataset: {dataset}")
-        print(f"Messages: {messages}")
-        print(f"Content length: {len(content)}")
-        print(f"Content types: {[c['type'] for c in content]}")
+        #print(f"\n=== DEBUG coconut_qwen_vision ===")
+        #print(f"Dataset: {dataset}")
+        #print(f"Messages: {messages}")
+        #print(f"Content length: {len(content)}")
+        #print(f"Content types: {[c['type'] for c in content]}")
         
         # Process inputs using qwen_vl_utils
         # Note: process_vision_info expects a list of conversations
         images, videos = self.process_vision_info([messages])
-        print(f"Images extracted: {len(images) if images else 0}")
-        print(f"Videos extracted: {len(videos) if videos else 0}")
+        #print(f"Images extracted: {len(images) if images else 0}")
+        #print(f"Videos extracted: {len(videos) if videos else 0}")
         
-        # Apply chat template
-        # Note: apply_chat_template expects a list of conversations and returns a list
         text = self.processor.apply_chat_template(
             [messages], 
             tokenize=False, 
             add_generation_prompt=True
         )
-        print(f"Text after template (first 500 chars): {str(text)[:500]}")
-        print(f"=== END DEBUG ===\n")
+        #print(f"Text after template (first 500 chars): {str(text)[:500]}")
+        #print(f"=== END DEBUG ===\n")
 
 
         # Process with processor
