@@ -28,9 +28,9 @@ Outputs = namedtuple("Outputs", ["loss", "inputs_embeds", "logits", "past_key_va
 class QwenVLMCoconut(nn.Module):
     """
     Coconut wrapper for Qwen2.5 VL models.
-    
+
     Key insight: Qwen merges vision embeddings into the sequence internally.
-    We use input_ids + pixel_values in the first pass, then cache the 
+    We use input_ids + pixel_values in the first pass, then cache the
     vision-merged embeddings for subsequent passes.
     """
 
@@ -54,7 +54,7 @@ class QwenVLMCoconut(nn.Module):
     def forward(self, **kwargs):
         """
         Forward pass with Coconut continuous thought mechanism.
-        
+
         Strategy (mirroring vlmcoconut.py):
         1. First pass: Use input_ids + pixel_values (let Qwen handle vision merging internally)
         2. Extract vision-merged embeddings from hidden states
@@ -64,7 +64,7 @@ class QwenVLMCoconut(nn.Module):
         attention_mask = kwargs.get('attention_mask')
         pixel_values = kwargs.get('pixel_values')
         image_grid_thw = kwargs.get('image_grid_thw')
-        
+
         logits = []
 
         # Find all latent token positions
@@ -79,59 +79,71 @@ class QwenVLMCoconut(nn.Module):
             latent_lists.append(lst)
 
         max_n_latents = max([len(l) for l in latent_lists])
-        
-        # Compute the range for the first forward pass
-        # This should go from 0 to the first latent token (excluding latent tokens)
-        if max_n_latents > 0:
-            first_latent_pos = latent_indices[:, 1].min().item()
-            next_compute_range = (0, first_latent_pos)
-        else:
-            # No latent tokens - process the full sequence
-            next_compute_range = (0, input_ids.shape[1])
 
         # We'll store the vision-merged embeddings after first pass
         inputs_embeds = None
 
+        # Always build a full, correct multimodal embedding baseline once
+        with torch.no_grad():
+            full_out = self.base_causallm(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
+                use_cache=False,
+                output_hidden_states=True,
+                return_dict=True,
+            )
+        self._rope_deltas = getattr(full_out, "rope_deltas", None)
+        inputs_embeds = full_out.hidden_states[0].detach().clone()  # now it's FULL length embeddings multimodal
+        
+        # CORRECT INDEX MAPPING: Find latent token positions in the MULTIMODAL sequence
+        # Since hidden_states[0] for text tokens is exactly their embedding, we can match them
+        with torch.no_grad():
+            latent_emb = self.embedding(torch.tensor([self.latent_token_id], device=input_ids.device))
+            # Compare every embedding in the multimodal sequence to the latent token embedding
+            # We use a small epsilon for float precision safety
+            diff = torch.norm(inputs_embeds - latent_emb, dim=-1)
+            mm_latent_indices = (diff < 1e-4).nonzero()
+            
+        # Re-build latent_lists using the correct multimodal indices
+        latent_lists = []
+        for i in range(input_ids.shape[0]):
+            lst = []
+            for idx in mm_latent_indices:
+                if idx[0] == i:
+                    lst.append(idx[1].item())
+            latent_lists.append(lst)
+            
+        if max_n_latents > 0:
+            # next_compute_range should now use the multimodal indices
+            first_latent_pos = mm_latent_indices[:, 1].min().item()
+            next_compute_range = (0, first_latent_pos)
+        else:
+            next_compute_range = (0, inputs_embeds.shape[1])
+
         kv_cache = None
         for pass_idx in range(max_n_latents):
             if kv_cache is None:
-                # First pass - use input_ids + pixel_values (like vlmcoconut.py)
-                # This lets Qwen handle vision merging internally with proper RoPE positions
+                # First pass - use the multimodal embeddings we already have
                 forward_kwargs = {
-                    "input_ids": input_ids[:, next_compute_range[0]:next_compute_range[1]],
+                    "inputs_embeds": inputs_embeds[:, next_compute_range[0]:next_compute_range[1], :],
                     "attention_mask": attention_mask[:, :next_compute_range[1]] if attention_mask is not None else None,
                     "output_hidden_states": True,
                     "use_cache": True,
                     "return_dict": True,
                     "past_key_values": DynamicCache(),
-                    "pixel_values": pixel_values,
                     "image_grid_thw": image_grid_thw,
+                    "rope_deltas": self._rope_deltas,
                     "cache_position": torch.arange(
                         next_compute_range[0], next_compute_range[1],
                         device=input_ids.device
                     ),
                 }
-                
-                # Add position_ids
-                if 'position_ids' in kwargs:
-                    forward_kwargs['position_ids'] = kwargs['position_ids'][:, next_compute_range[0]:next_compute_range[1]]
-
                 outputs = self.base_causallm(**forward_kwargs)
                 hidden_states_offset = next_compute_range[0]
-                
-                # Extract vision-merged embeddings from hidden states for subsequent passes
-                # hidden_states[0] contains the input embeddings with vision tokens merged
-                first_pass_embeds = outputs.hidden_states[0]
-                
-                # Build full inputs_embeds by combining first pass embeds with remaining text embeddings
-                # The remaining text embeddings (after next_compute_range[1]) need to be computed
-                if next_compute_range[1] < input_ids.shape[1]:
-                    remaining_text_embeds = self.embedding(input_ids[:, next_compute_range[1]:])
-                    inputs_embeds = torch.cat([first_pass_embeds, remaining_text_embeds], dim=1)
-                else:
-                    inputs_embeds = first_pass_embeds
             else:
-                # Subsequent passes - use inputs_embeds (consistent with first pass)
+                # Subsequent passes
                 legacy_kv_cache = kv_cache.to_legacy_cache()
                 past_key_values = [
                     (
@@ -145,15 +157,11 @@ class QwenVLMCoconut(nn.Module):
                 forward_kwargs = {
                     "inputs_embeds": inputs_embeds[:, next_compute_range[0]:next_compute_range[1], :],
                     "attention_mask": attention_mask[:, :next_compute_range[1]] if attention_mask is not None else None,
-                    "position_ids": torch.arange(
-                        next_compute_range[0],
-                        next_compute_range[1],
-                        dtype=torch.long,
-                        device=input_ids.device
-                    ).unsqueeze(0),
+                    "rope_deltas": self._rope_deltas,
                     "past_key_values": past_key_values,
                     "output_hidden_states": True,
                     "use_cache": True,
+                    "image_grid_thw": image_grid_thw,
                     "cache_position": torch.arange(
                         next_compute_range[0], next_compute_range[1],
                         device=input_ids.device
@@ -169,7 +177,7 @@ class QwenVLMCoconut(nn.Module):
             next_compute_range = (
                 next_compute_range[1],
                 (
-                    input_ids.shape[1]
+                    inputs_embeds.shape[1] # Use multimodal shape
                     if pass_idx + 1 >= max_n_latents
                     else next_compute_range[1] + 1
                 ),
@@ -179,20 +187,10 @@ class QwenVLMCoconut(nn.Module):
             kv_cache = outputs.past_key_values
 
             # Feedback continuous thoughts to input_embeds
-            # Replace latent token embeddings with hidden states from previous position
             filling_indices = [
                 (instance_idx, mask_list[pass_idx])
                 for instance_idx, mask_list in enumerate(latent_lists)
                 if len(mask_list) > pass_idx
-            ]
-
-            # Avoid in-place operations by creating tensor list
-            tensor_list = [
-                [
-                    inputs_embeds[batch_idx, pos, :]
-                    for pos in range(inputs_embeds.shape[1])
-                ]
-                for batch_idx in range(inputs_embeds.shape[0])
             ]
 
             # Replace latent tokens with continuous thoughts (hidden states)
@@ -200,29 +198,23 @@ class QwenVLMCoconut(nn.Module):
                 batch_idx, token_idx = idx_pair
                 source_idx = token_idx - 1 - hidden_states_offset
                 vec = hidden_states[batch_idx, source_idx, :]
-                tensor_list[batch_idx][token_idx] = vec
-
-            # Reassemble inputs_embeds
-            inputs_embeds = torch.stack(
-                [
-                    torch.stack(tensor_list[batch_idx])
-                    for batch_idx in range(inputs_embeds.shape[0])
-                ]
-            )
+                inputs_embeds[batch_idx, token_idx, :] = vec # Safe to do in-place on our clone
 
         # Final pass
         final_forward_kwargs = {
             "inputs_embeds": inputs_embeds[:, next_compute_range[0]:next_compute_range[1], :],
             "attention_mask": attention_mask[:, :next_compute_range[1]] if attention_mask is not None else None,
-            "position_ids": torch.arange(
-                next_compute_range[0],
-                next_compute_range[1],
-                dtype=torch.long,
-                device=input_ids.device
-            ).unsqueeze(0),
+            "rope_deltas": self._rope_deltas,
+            "image_grid_thw": image_grid_thw,
             "output_hidden_states": True,
+            "cache_position": torch.arange(
+                      next_compute_range[0], next_compute_range[1],
+                      device=input_ids.device
+                      ),
+            "use_cache": True,
+            "return_dict": True,
         }
-        
+
         if kv_cache:
             legacy_kv_cache = kv_cache.to_legacy_cache()
             past_key_values = [
@@ -241,7 +233,8 @@ class QwenVLMCoconut(nn.Module):
         self.gen_forward_cnt += max_n_latents + 1
         loss = None
         logits = torch.cat(logits, dim=-2)
-        return Outputs(loss=loss, inputs_embeds=inputs_embeds, logits=logits, past_key_values=past_key_values)
+        return Outputs(loss=loss, inputs_embeds=inputs_embeds, logits=logits, past_key_values=outputs.past_key_values)
+
 
     def eval(self):
         self.base_causallm.eval()
@@ -249,7 +242,7 @@ class QwenVLMCoconut(nn.Module):
     def generate(self, **kwargs):
         """
         Generate text with Coconut continuous thought mechanism.
-        
+
         Strategy:
         1. Run Coconut forward pass with input_ids + pixel_values to get latent-filled embeddings
         2. Use the full inputs_embeds (with vision merged) for autoregressive generation
@@ -306,26 +299,24 @@ class QwenVLMCoconut(nn.Module):
         )
 
         # Autoregressive generation loop
-        # We use inputs_embeds (with vision merged) for all subsequent steps
-        # This ensures the model can still attend to the vision tokens via their embeddings
-        # We now also pass position_ids to ensure correct M-RoPE computation
+        # We now use the KV cache from the Coconut pass for efficiency
+        kv_cache = outputs.past_key_values
+        current_pos = inputs_embeds.shape[1]
+
         for _ in range(max_new_tokens - 1):
-            # Create position_ids for the current step
-            # We need to pass positions for ALL tokens in inputs_embeds
-            step_position_ids = torch.arange(
-                0, inputs_embeds.shape[1], dtype=torch.long, device=device
-            ).unsqueeze(0)
-            
             step_out = self.base_causallm(
-                inputs_embeds=inputs_embeds,
+                inputs_embeds=inputs_embeds[:, -1:, :], # Only process the last token
                 attention_mask=attention_mask,
-                position_ids=step_position_ids,
-                use_cache=False,
-                output_hidden_states=False,
+                image_grid_thw=image_grid_thw,
+                rope_deltas=self._rope_deltas,
+                past_key_values=kv_cache,
+                use_cache=True,
+                cache_position=torch.tensor([current_pos - 1], device=device),
                 return_dict=True,
             )
 
             logits_step = step_out.logits
+            kv_cache = step_out.past_key_values
             next_token = int(logits_step[0, -1].argmax(-1))
 
             if next_token == self.eos_token_id:
@@ -341,5 +332,6 @@ class QwenVLMCoconut(nn.Module):
                 ],
                 dim=1,
             )
+            current_pos += 1
 
         return torch.tensor(tokens, device=device).unsqueeze(0)
