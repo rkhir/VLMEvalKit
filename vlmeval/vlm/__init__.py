@@ -81,7 +81,7 @@ from .slime import SliME
 from .mplug_owl3 import mPLUG_Owl3
 from .pixtral import Pixtral
 from .llama_vision import llama_vision
-from .coconut_vlm import CoconutVision, CoconutQwenVision
+from .coconut_vlm import CoconutVision, CoconutQwenVision, CoconutLLaVA
 from .llama4 import llama4
 from .molmo import molmo
 from .points import POINTS, POINTSV15

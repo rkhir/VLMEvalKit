@@ -128,6 +128,8 @@ class CoconutLLaVA(BaseModel):
 
         if 'onevision' in path_lower:
             from transformers import LlavaOnevisionForConditionalGeneration
+            print(f"Loaded LlavaOnevisionForConditionalGeneration model from {model_path}")
+
             return LlavaOnevisionForConditionalGeneration.from_pretrained(
                 model_path, **load_kwargs
             ).eval()
@@ -135,6 +137,7 @@ class CoconutLLaVA(BaseModel):
         # Try LlavaNext first (covers v1.6 and newer)
         try:
             from transformers import LlavaNextForConditionalGeneration
+            print(f"Loaded LlavaNextForConditionalGeneration model from {model_path}")
             return LlavaNextForConditionalGeneration.from_pretrained(
                 model_path, **load_kwargs
             ).eval()
@@ -143,6 +146,7 @@ class CoconutLLaVA(BaseModel):
 
         # Fallback to basic LlavaForConditionalGeneration (v1.5)
         from transformers import LlavaForConditionalGeneration
+        print(f"Loaded LlavaForConditionalGeneration model from {model_path}")
         return LlavaForConditionalGeneration.from_pretrained(
             model_path, **load_kwargs
         ).eval()
@@ -157,7 +161,7 @@ class CoconutLLaVA(BaseModel):
                     return tid
             except Exception:
                 continue
-        return tokenizer.convert_tokens_to_ids(".")
+        return tokenizer.convert_tokens_to_ids("<<")
 
     # ── prompt building ──────────────────────────────────────────────────
 

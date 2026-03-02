@@ -1595,16 +1595,13 @@ coconut_series = {
     'coconut-qwen-t4': partial(CoconutQwenVision, model_path="Qwen/Qwen2.5-VL-7B-Instruct", c_thought=4),
     'coconut-qwen-t5': partial(CoconutQwenVision, model_path="Qwen/Qwen2.5-VL-7B-Instruct", c_thought=5),
 
-    # Llava 1.5 VL Coconut models (merged embedding CLIP Arch)
-    "coconut-qwen": partial(
-        CoconutQwenVision, model_path="llava-hf/llava-v1.6-vicuna-7b-hf"
-    ),
-    'coconut-llava-t0': partial(LLaVAVLMCoconut, model_path="llava-hf/llava-v1.6-vicuna-7b-hf", c_thought=0),
-    'coconut-qwen-t1': partial(LLaVAVLMCoconut, model_path="llava-hf/llava-v1.6-vicuna-7b-hf", c_thought=1),
-    'coconut-qwen-t2': partial(LLaVAVLMCoconut, model_path="llava-hf/llava-v1.6-vicuna-7b-hf", c_thought=2),
-    'coconut-qwen-t3': partial(LLaVAVLMCoconut, model_path="llava-hf/llava-v1.6-vicuna-7b-hf", c_thought=3),
-    'coconut-qwen-t4': partial(LLaVAVLMCoconut, model_path="llava-hf/llava-v1.6-vicuna-7b-hf", c_thought=4),
-    'coconut-qwen-t5': partial(LLaVAVLMCoconut, model_path="llava-hf/llava-v1.6-vicuna-7b-hf", c_thought=5),
+    # LLaVA 1.6 VL Coconut models (inline CLIP vision tokens)
+    'coconut-llava-t0': partial(CoconutLLaVA, model_path="llava-hf/llava-v1.6-vicuna-7b-hf", c_thought=0),
+    'coconut-llava-t1': partial(CoconutLLaVA, model_path="llava-hf/llava-v1.6-vicuna-7b-hf", c_thought=1),
+    'coconut-llava-t2': partial(CoconutLLaVA, model_path="llava-hf/llava-v1.6-vicuna-7b-hf", c_thought=2),
+    'coconut-llava-t3': partial(CoconutLLaVA, model_path="llava-hf/llava-v1.6-vicuna-7b-hf", c_thought=3),
+    'coconut-llava-t4': partial(CoconutLLaVA, model_path="llava-hf/llava-v1.6-vicuna-7b-hf", c_thought=4),
+    'coconut-llava-t5': partial(CoconutLLaVA, model_path="llava-hf/llava-v1.6-vicuna-7b-hf", c_thought=5),
 }
 
 molmo_series = {

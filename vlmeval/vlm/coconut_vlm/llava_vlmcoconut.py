@@ -9,18 +9,22 @@ Architecture difference from Llama-Vision:
   language model processes them via standard self-attention.
 
 COCONUT strategy (analogous to vlmcoconut.py for Llama-Vision):
-1. Extract vision features ONCE via vision_tower + multi_modal_projector
-2. Build inputs_embeds by injecting vision features at <image> positions
-3. Run multi-pass COCONUT loop through the model using inputs_embeds
-4. Vision tokens in the KV cache from the first pass ensure visual info persists
-5. Autoregressive generation recomputes the full prefix each step (like vlmcoconut.py)
+1. First COCONUT pass processes the prefix (everything before the first
+   latent token) with input_ids + pixel_values, letting the model run its
+   own vision pipeline (CLIP -> MLP projector -> masked_scatter).
+2. hidden_states[0] from that pass gives vision-merged prefix embeddings;
+   combined with self.embedding() for latent/suffix tokens to form full
+   inputs_embeds -- no redundant full-sequence forward pass.
+3. Vision token K/V entries in the cache from the first pass ensure visual
+   info persists across all subsequent COCONUT passes.
+4. Autoregressive generation recomputes the full prefix each step.
 
 Why this avoids the Qwen approach's visual feature degradation:
-- We explicitly extract and inject vision features (not relying on hidden_states[0])
-- Standard RoPE positioning (no rope_deltas complications)
-- All passes go through LlavaNextForConditionalGeneration with input_ids=None,
-  pixel_values=None, inputs_embeds=segment -- the model skips its internal
-  vision routing and passes our embeddings straight to the language model.
+- Vision features are computed via the model's own pipeline, not a separate
+  extraction step, ensuring token counts and AnyRes handling are correct.
+- Standard RoPE positioning (no rope_deltas complications).
+- Subsequent COCONUT passes go through the language model with inputs_embeds
+  and KV cache, preserving vision context from the first pass.
 """
 
 import torch
@@ -30,67 +34,6 @@ from transformers import DynamicCache
 
 
 Outputs = namedtuple("Outputs", ["loss", "inputs_embeds", "logits", "past_key_values"])
-
-
-def _extract_vision_features(base_model, pixel_values, image_sizes=None):
-    """
-    Extract vision features from LLaVA's vision tower + MLP projector.
-
-    Analogous to _compute_cross_attention_states() in vlmcoconut.py:
-    compute vision representations once, then reuse across all COCONUT passes.
-
-    Returns:
-        Flat tensor of projected image features [total_patches, hidden_dim]
-        ready for masked_scatter into inputs_embeds.
-    """
-    inner = base_model.model if hasattr(base_model, 'model') else base_model
-
-    with torch.no_grad():
-        if hasattr(inner, 'get_image_features') and image_sizes is not None:
-            # LlavaNextModel.get_image_features handles AnyRes packing
-            output = inner.get_image_features(
-                pixel_values, image_sizes, return_dict=True
-            )
-            if hasattr(output, 'pooler_output') and output.pooler_output is not None:
-                image_features = torch.cat(output.pooler_output, dim=0)
-            else:
-                image_features = output
-        elif hasattr(inner, 'get_image_features'):
-            # LlavaModel.get_image_features returns tensor directly
-            image_features = inner.get_image_features(pixel_values)
-            if isinstance(image_features, (list, tuple)):
-                image_features = torch.cat(image_features, dim=0)
-        else:
-            # Manual fallback: run vision tower + projector
-            vision_tower = inner.vision_tower
-            projector = inner.multi_modal_projector
-
-            vout = vision_tower(
-                pixel_values, output_hidden_states=True, return_dict=True
-            )
-
-            if hasattr(inner.config, 'vision_feature_layer'):
-                layer = inner.config.vision_feature_layer
-                if isinstance(layer, int):
-                    features = vout.hidden_states[layer]
-                else:
-                    features = torch.cat(
-                        [vout.hidden_states[l] for l in layer], dim=-1
-                    )
-            else:
-                features = vout.last_hidden_state
-
-            if (hasattr(inner.config, 'vision_feature_select_strategy')
-                    and inner.config.vision_feature_select_strategy == 'default'):
-                features = features[:, 1:]
-
-            image_features = projector(features)
-            if image_features.ndim == 3:
-                image_features = image_features.reshape(
-                    -1, image_features.shape[-1]
-                )
-
-    return image_features
 
 
 class LLaVAVLMCoconut(nn.Module):
@@ -125,57 +68,25 @@ class LLaVAVLMCoconut(nn.Module):
             self.image_token_id = config.image_token_index
         else:
             self.image_token_id = None
-
-    def _build_multimodal_embeds(self, input_ids, pixel_values, image_sizes=None):
-        """
-        Build inputs_embeds with vision features injected at <image> positions.
-
-        The processor has already expanded <image> into the correct number of
-        placeholder tokens in input_ids.  We embed everything, then overwrite
-        the placeholder positions with projected vision features.
-        """
-        inputs_embeds = self.embedding(input_ids)
-
-        if pixel_values is not None and self.image_token_id is not None:
-            image_features = _extract_vision_features(
-                self.base_model, pixel_values, image_sizes
-            )
-            image_features = image_features.to(
-                device=inputs_embeds.device, dtype=inputs_embeds.dtype
-            )
-
-            image_mask = (input_ids == self.image_token_id)
-            n_image_tokens = image_mask.sum().item()
-            n_features = image_features.shape[0]
-
-            if n_image_tokens != n_features:
-                raise ValueError(
-                    f"Image token count ({n_image_tokens}) != vision feature "
-                    f"count ({n_features}). The processor may not have created "
-                    f"the right number of placeholder tokens."
-                )
-
-            image_mask_3d = image_mask.unsqueeze(-1).expand_as(inputs_embeds)
-            inputs_embeds = inputs_embeds.masked_scatter(
-                image_mask_3d, image_features
-            )
-
-        return inputs_embeds
+            print("WARNING: No image token id found in config")
 
     def forward(self, **kwargs):
         """
         Forward pass with Coconut continuous thought mechanism.
 
-        Flow (mirrors vlmcoconut.py):
-        1. Build multimodal inputs_embeds (vision features injected at <image>)
-        2. Find latent token positions in input_ids
-        3. Multi-pass loop: process segments with KV cache, update latent embeds
-        4. Final pass: process remaining tokens after all latent passes
+        Flow:
+        1. Find latent token positions in input_ids
+        2. No latents -> single forward with pixel_values and return
+        3. First COCONUT pass processes the prefix with pixel_values so the
+           model handles its own vision pipeline; hidden_states[0] gives
+           vision-merged prefix embeddings, combined with self.embedding()
+           for latent/suffix tokens to form full inputs_embeds
+        4. Subsequent passes update latent embeddings via KV-cached forwards
+        5. Final pass processes remaining tokens after all latent passes
         """
         input_ids = kwargs['input_ids']
         pixel_values = kwargs.get('pixel_values')
         image_sizes = kwargs.get('image_sizes')
-        logits = []
 
         # ── find latent token positions ──────────────────────────────────
         latent_indices = (input_ids == self.latent_token_id).nonzero()
@@ -190,26 +101,19 @@ class LLaVAVLMCoconut(nn.Module):
 
         max_n_latents = max([len(l) for l in latent_lists])
 
-        # ── build multimodal embeddings (vision injected) ────────────────
-        inputs_embeds = self._build_multimodal_embeds(
-            input_ids, pixel_values, image_sizes
-        )
-
-        # ── no latent tokens → straight forward pass ────────────────────
+        # ── no latent tokens -> single forward pass, done ────────────────
         if max_n_latents == 0:
-            forward_kwargs = {
-                "input_ids": None,
-                "inputs_embeds": inputs_embeds,
-                "attention_mask": kwargs.get('attention_mask'),
-                "output_hidden_states": True,
-                "return_dict": True,
-            }
-            if 'position_ids' in kwargs:
-                forward_kwargs['position_ids'] = kwargs['position_ids']
-
-            outputs = self.base_model(**forward_kwargs)
+            outputs = self.base_model(
+                input_ids=input_ids,
+                pixel_values=pixel_values,
+                image_sizes=image_sizes,
+                attention_mask=kwargs.get('attention_mask'),
+                output_hidden_states=True,
+                return_dict=True,
+            )
             return Outputs(
-                loss=None, inputs_embeds=inputs_embeds,
+                loss=None,
+                inputs_embeds=outputs.hidden_states[0].detach().clone(),
                 logits=outputs.logits, past_key_values=None,
             )
 
@@ -217,16 +121,19 @@ class LLaVAVLMCoconut(nn.Module):
         next_compute_range = (0, latent_indices[:, 1].min().item())
 
         kv_cache = None
+        inputs_embeds = None
         for pass_idx in range(max_n_latents):
             if kv_cache is None:
-                # First pass: process prefix up to first latent token.
-                # This segment includes ALL vision tokens, so their K/V
-                # entries are written into the cache for subsequent passes.
+                # First pass: process prefix with pixel_values so the
+                # model runs its own vision pipeline (CLIP -> projector ->
+                # masked_scatter).  Vision token K/V entries are written
+                # into the cache for all subsequent passes.
                 forward_kwargs = {
-                    "input_ids": None,
-                    "inputs_embeds": inputs_embeds[
-                        :, next_compute_range[0]:next_compute_range[1], :
+                    "input_ids": input_ids[
+                        :, next_compute_range[0]:next_compute_range[1]
                     ],
+                    "pixel_values": pixel_values,
+                    "image_sizes": image_sizes,
                     "attention_mask": kwargs['attention_mask'][
                         :, :next_compute_range[1]
                     ],
@@ -245,6 +152,17 @@ class LLaVAVLMCoconut(nn.Module):
                 }
                 outputs = self.base_model(**forward_kwargs)
                 hidden_states_offset = next_compute_range[0]
+
+                # Build full-sequence inputs_embeds: vision-merged prefix
+                # from hidden_states[0], plain embeddings for the rest
+                # (latent + suffix tokens contain no image tokens).
+                prefix_embeds = outputs.hidden_states[0].detach().clone()
+                rest_embeds = self.embedding(
+                    input_ids[:, next_compute_range[1]:]
+                )
+                inputs_embeds = torch.cat(
+                    [prefix_embeds, rest_embeds], dim=1
+                )
 
             else:
                 # Subsequent passes: process latent-token segment with
@@ -286,8 +204,6 @@ class LLaVAVLMCoconut(nn.Module):
                 }
                 outputs = self.base_model(**forward_kwargs)
                 hidden_states_offset = next_compute_range[0]
-
-            logits.append(outputs.logits)
 
             # advance the window
             next_compute_range = (
@@ -366,15 +282,13 @@ class LLaVAVLMCoconut(nn.Module):
             final_forward_kwargs['past_key_values'] = past_key_values
 
         outputs = self.base_model(**final_forward_kwargs)
-        logits.append(outputs.logits)
 
         self.gen_forward_cnt += max_n_latents + 1
-        logits = torch.cat(logits, dim=-2)
 
         return Outputs(
             loss=None,
             inputs_embeds=inputs_embeds,
-            logits=logits,
+            logits=outputs.logits,
             past_key_values=outputs.past_key_values,
         )
 
@@ -386,8 +300,8 @@ class LLaVAVLMCoconut(nn.Module):
         Generate text with Coconut continuous thought mechanism.
 
         Strategy (mirrors vlmcoconut.py):
-        1. Run Coconut forward → latent-filled inputs_embeds + prefix logits
-        2. Greedy-decode first token from prefix logits
+        1. Run Coconut forward -> latent-filled inputs_embeds + final logits
+        2. Greedy-decode first token from final logits
         3. Autoregressive loop: full-prefix recomputation each step
            (vision features are embedded in inputs_embeds, always available)
         """
