@@ -297,7 +297,11 @@ class CoconutLLaVA(BaseModel):
         content, images = [], []
         for msg in message:
             if msg['type'] == 'text':
-                content.append({'type': 'text', 'text': msg['value']})
+                text = msg['value']
+                # For datasets without custom prompts, inject latent tokens
+                if self.c_thought > 0 and '<|latent|>' not in text:
+                    text = text + '<|latent|>' * self.c_thought
+                content.append({'type': 'text', 'text': text})
             elif msg['type'] == 'image':
                 content.append({'type': 'image'})
                 images.append(Image.open(msg['value']).convert('RGB'))
