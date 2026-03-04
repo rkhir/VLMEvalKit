@@ -100,22 +100,8 @@ class LLaVAVLMCoconut(nn.Module):
             latent_lists.append(lst)
 
         max_n_latents = max([len(l) for l in latent_lists])
+        logits = []
 
-        # ── no latent tokens -> single forward pass, done ────────────────
-        if max_n_latents == 0:
-            outputs = self.base_model(
-                input_ids=input_ids,
-                pixel_values=pixel_values,
-                image_sizes=image_sizes,
-                attention_mask=kwargs.get('attention_mask'),
-                output_hidden_states=True,
-                return_dict=True,
-            )
-            return Outputs(
-                loss=None,
-                inputs_embeds=outputs.hidden_states[0].detach().clone(),
-                logits=outputs.logits, past_key_values=None,
-            )
 
         # ── COCONUT multi-pass loop ──────────────────────────────────────
         next_compute_range = (0, latent_indices[:, 1].min().item())
@@ -205,6 +191,7 @@ class LLaVAVLMCoconut(nn.Module):
                 outputs = self.base_model(**forward_kwargs)
                 hidden_states_offset = next_compute_range[0]
 
+            logits.append(outputs.logits)
             # advance the window
             next_compute_range = (
                 next_compute_range[1],
@@ -282,13 +269,14 @@ class LLaVAVLMCoconut(nn.Module):
             final_forward_kwargs['past_key_values'] = past_key_values
 
         outputs = self.base_model(**final_forward_kwargs)
+        logits.append(outputs.logits)
 
         self.gen_forward_cnt += max_n_latents + 1
-
+        logits = torch.cat(logits, dim=-2)
         return Outputs(
             loss=None,
             inputs_embeds=inputs_embeds,
-            logits=outputs.logits,
+            logits=logits,
             past_key_values=outputs.past_key_values,
         )
 
